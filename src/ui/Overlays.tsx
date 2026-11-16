@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { T_BOOM, T_LOGO } from "../intro/config";
-import { clamp, lerp, smoothstep, easeOutCubic } from "../intro/math";
+import { clamp, smoothstep, easeOutCubic } from "../intro/math";
 import type { Config, Layer } from "../intro/schema";
 import { hash2, useTime } from "./store";
 
@@ -16,8 +16,19 @@ function TextLayer({ layer, z }: { layer: Layer; z: number }) {
   sRef.current = s;
   const root = useRef<HTMLDivElement>(null);
   const spans = useRef<(HTMLSpanElement | null)[]>([]);
+  const spacingRef = useRef(-1);
   const text = s.upper ? String(s.text).toUpperCase() : String(s.text);
   const chars = useMemo(() => Array.from(text), [text]);
+
+  // letterSpacing задаём один раз при изменении конфига — не каждый рАФ (рефлоу)
+  if (spacingRef.current !== s.spacing) {
+    spacingRef.current = s.spacing;
+    const el = root.current;
+    if (el) {
+      el.style.letterSpacing = `${s.spacing}em`;
+      el.style.paddingLeft = `${s.spacing}em`;
+    }
+  }
 
   useTime(
     (t) => {
@@ -29,15 +40,11 @@ function TextLayer({ layer, z }: { layer: Layer; z: number }) {
       const p = clamp(lt / Math.max(0.05, c.duration));
       const out = c.outAt > 0 ? smoothstep(c.outAt, c.outAt + c.outDur, lt) : 0;
       const n = chars.length;
-      const e0 = easeOutCubic(p);
-      const sp = lerp(c.spacingFrom, c.spacing, e0);
       const st = clamp(c.anim === "typewriter" ? 1 : c.stagger, 0, 1.5) * 0.85;
       const q = Math.floor(t * 24);
       const visible = lt > 0 && out < 1;
       el.style.visibility = visible ? "visible" : "hidden";
       if (!visible) return;
-      el.style.letterSpacing = `${sp}em`;
-      el.style.paddingLeft = `${sp}em`;
       el.style.opacity = String(c.opacity * (1 - out));
       const sweep = (t * c.shimmerSpeed) % 1.7 - 0.35;
       const sweepOn = c.shimmer > 0 ? smoothstep(0.5, 1, p) : 0;
@@ -91,7 +98,10 @@ function TextLayer({ layer, z }: { layer: Layer; z: number }) {
         sp_.style.opacity = String(o);
         sp_.style.transform = `translate(${tx}em, ${ty}em) scale(${sc})`;
         sp_.style.clipPath = clip || "none";
-        sp_.style.filter = b > 0.05 || sh > 0.01 ? `${b > 0.05 ? `blur(${b}px) ` : ""}brightness(${1 + sh * 1.1})` : "none";
+        const blurPart = b > 0.05 ? `blur(${b}px)` : "blur(0px)";
+        const brightPart = sh > 0.001 ? `brightness(${1 + sh * 1.1})` : "brightness(1)";
+        sp_.style.filter = `${blurPart} ${brightPart}`;
+        sp_.style.willChange = "transform, opacity";
       }
     },
     [chars.length]
@@ -147,16 +157,17 @@ function BarsLayer({ layer, z }: { layer: Layer; z: number }) {
   const bot = useRef<HTMLDivElement>(null);
   useTime((t) => {
     const c = sRef.current;
-    const h =
-      c.height * smoothstep(0, Math.max(0.05, c.inDur), t) *
+    const scaleY =
+      c.height / 100 *
+      smoothstep(0, Math.max(0.05, c.inDur), t) *
       (c.keep ? 1 : 1 - smoothstep(T_BOOM + c.outAfter, T_BOOM + c.outAfter + c.outDur, t));
-    if (top.current) top.current.style.height = `${h}vh`;
-    if (bot.current) bot.current.style.height = `${h}vh`;
+    if (top.current) top.current.style.transform = `scaleY(${scaleY})`;
+    if (bot.current) bot.current.style.transform = `scaleY(${scaleY})`;
   });
   return (
     <>
-      <div ref={top} className="pointer-events-none absolute inset-x-0 top-0" style={{ zIndex: z, background: layer.s.color }} />
-      <div ref={bot} className="pointer-events-none absolute inset-x-0 bottom-0" style={{ zIndex: z, background: layer.s.color }} />
+      <div ref={top} className="pointer-events-none absolute inset-x-0 top-0" style={{ zIndex: z, background: layer.s.color, transformOrigin: "top" }} />
+      <div ref={bot} className="pointer-events-none absolute inset-x-0 bottom-0" style={{ zIndex: z, background: layer.s.color, transformOrigin: "bottom" }} />
     </>
   );
 }
@@ -176,13 +187,13 @@ function HudLayer({ layer, z, duration, onReplay }: { layer: Layer; z: number; d
   useTime((t) => {
     const c = sRef.current;
     if (prog.current) prog.current.style.transform = `scaleX(${clamp(t / durRef.current)})`;
-    if (hud.current) hud.current.style.opacity = String(c.hideAfterLogo ? 0.8 * (1 - smoothstep(T_LOGO + 2, T_LOGO + 4, t)) + 0.15 : 0.9);
+    if (hud.current) hud.current.style.opacity = String(c.hideAfterLogo ? 0.8 * (1 - smoothstep(durRef.current - 2, durRef.current - 0.5, t)) + 0.15 : 0.9);
     const sec = Math.floor(t);
     if (sec !== lastSec.current) {
       lastSec.current = sec;
       if (time.current) time.current.textContent = fmt(t);
     }
-    const show = t > T_LOGO + 6;
+    const show = t > durRef.current - 2;
     if (show !== shown.current) {
       shown.current = show;
       setCanReplay(show);

@@ -40,9 +40,14 @@ export function loadConfig(): Config {
   return defaultConfig();
 }
 
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
 export function saveConfig(c: Config) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(c));
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(c));
+      saveTimer = null;
+    }, 300);
   } catch {
     /* ignore */
   }

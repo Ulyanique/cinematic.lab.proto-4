@@ -128,6 +128,19 @@ export function FloatPanel({
     });
   };
   const onUp = () => (drag.current = null);
+  const onCancel = () => (drag.current = null);
+
+  // переклеmpiт позицию при ресайзе окна, чтобы панель не застряла за экраном
+  useEffect(() => {
+    const onResize = () => {
+      setPos((p) => ({
+        x: Math.min(window.innerWidth - 60, Math.max(-width + 80, right ? Math.max(8, window.innerWidth - width - p.x) : p.x)),
+        y: Math.min(window.innerHeight - 40, Math.max(0, p.y)),
+      }));
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [width, right]);
 
   return (
     <div
@@ -140,6 +153,7 @@ export function FloatPanel({
         onPointerDown={onDown}
         onPointerMove={onMove}
         onPointerUp={onUp}
+        onPointerCancel={onCancel}
       >
         <div className="text-[10px] font-semibold tracking-[0.25em] text-amber-200 uppercase">{title}</div>
         <div className="flex items-center gap-1 text-white/50">

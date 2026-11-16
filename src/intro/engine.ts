@@ -74,7 +74,7 @@ interface CrystalObj {
 export class IntroEngine {
   private renderer!: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
-  private camera = new THREE.PerspectiveCamera(46, 1, 0.15, 2600);
+  private camera = new THREE.PerspectiveCamera(46, 1, 0.5, 2600);
   private composer!: EffectComposer;
   private bloom!: UnrealBloomPass;
   private finalPass!: ShaderPass;
@@ -143,7 +143,7 @@ export class IntroEngine {
     this.paused = opts.paused ?? !g0.autoplay;
 
     this.renderer = new THREE.WebGLRenderer({
-      antialias: false,
+      antialias: true,
       powerPreference: "high-performance",
       alpha: false,
     });
@@ -213,6 +213,16 @@ export class IntroEngine {
 
     const rt = pm.fromScene(s, 0.02);
     pm.dispose();
+    // утилизируем временную сцену окружения (купол + 9 панелей)
+    s.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.isMesh) {
+        m.geometry.dispose();
+        const mat = m.material as THREE.Material | THREE.Material[] | undefined;
+        if (Array.isArray(mat)) mat.forEach((x) => (x as any).dispose());
+        else (mat as any)?.dispose();
+      }
+    });
     this.disposables.push(rt);
     return rt.texture;
   }
@@ -378,7 +388,7 @@ export class IntroEngine {
       // свечение у основания и световой столб
       const gl = makeBaseGlowMaterial();
       const glow = new THREE.Mesh(glowGeo, gl.mat);
-      glow.position.set(px, 0.08, pz);
+      glow.position.set(px, 0.15, pz);
       glow.frustumCulled = false;
       glow.visible = false;
       this.scene.add(glow);
@@ -593,7 +603,7 @@ export class IntroEngine {
 
   private tag(grp: THREE.Group, order: number) {
     grp.traverse((o) => {
-      if ((o as THREE.Group).isGroup) o.renderOrder = order;
+      o.renderOrder = order;
     });
   }
 
@@ -609,7 +619,7 @@ export class IntroEngine {
     const N = cfg.layers.length;
     const seen = new Set<string>();
     cfg.layers.forEach((L, i) => {
-      const order = (N - i) * 10;
+      const order = (N - i) * 10 + (L.s.overlay ? 10000 : 0);
       if (L.type === "logo") {
         seen.add(L.id);
         let e = this.logos.get(L.id);
@@ -640,7 +650,7 @@ export class IntroEngine {
     }
   }
 
-  /** Рендер стека 3D-слоёв: общий проход + отдельные проходы для «overlay»-слоёв */
+  /** Рендер стека 3D-слоёв: один проход, порядок через renderOrder (overlay-слои — выше) */
   renderStack(renderer: THREE.WebGLRenderer, target: THREE.WebGLRenderTarget) {
     const ac = renderer.autoClear;
     renderer.autoClear = false;
@@ -648,15 +658,8 @@ export class IntroEngine {
     renderer.setClearColor(0x000000, 1);
     renderer.clear(true, true, true);
     const all: THREE.Group[] = [...Object.values(this.groups), ...[...this.logos.values()].map((e) => e.grp)];
-    for (const g of all) g.visible = !!g.userData.on && !g.userData.overlay;
+    for (const g of all) g.visible = !!g.userData.on;
     renderer.render(this.scene, this.camera);
-    for (const g of all) {
-      if (g.userData.on && g.userData.overlay) {
-        for (const o of all) o.visible = o === g;
-        renderer.clearDepth();
-        renderer.render(this.scene, this.camera);
-      }
-    }
     renderer.autoClear = ac;
   }
 
@@ -664,7 +667,6 @@ export class IntroEngine {
   private buildPost() {
     const rt = new THREE.WebGLRenderTarget(4, 4, {
       type: THREE.HalfFloatType,
-      samples: 4,
     });
     this.composer = new EffectComposer(this.renderer, rt);
     this.composer.addPass(new StackPass(this));
@@ -727,8 +729,8 @@ export class IntroEngine {
       this.resizeDirty = false;
       this.update(this.t);
       this.composer.render();
+      this.onTime?.(this.t, !this.paused);
     }
-    this.onTime?.(this.t, !this.paused);
     this.raf = requestAnimationFrame(this.loop);
   };
 
@@ -773,6 +775,11 @@ export class IntroEngine {
       const url = lines[i] || null;
       if (url === c.src) return;
       c.video?.pause();
+      c.video?.remove();
+      c.video = undefined;
+      // утилизируем старую текстуру экрана
+      const oldTex = c.screenMat.uniforms.uTex.value;
+      if (oldTex && oldTex.isTexture) oldTex.dispose();
       let tex: THREE.Texture;
       if (url) {
         const v = makeVideoTexture(url, aniso);
@@ -780,7 +787,6 @@ export class IntroEngine {
         c.video = v.video;
       } else {
         tex = makePlaceholderTexture(i, c.aspect, c.shape, aniso);
-        c.video = undefined;
       }
       this.disposables.push(tex);
       c.screenMat.uniforms.uTex.value = tex;
@@ -818,8 +824,11 @@ export class IntroEngine {
     const sx = Math.sin(t * 13.1) * 0.6 + Math.sin(t * 31.7 + 1.3) * 0.4;
     const sy = Math.sin(t * 11.3 + 2.0) * 0.6 + Math.sin(t * 27.9) * 0.4;
     const sz = Math.sin(t * 9.7 + 4.0) * 0.6 + Math.sin(t * 23.3 + 0.6) * 0.4;
-    this.camera.fov = clamp(cs.fov + g.fovAdd, 8, 130);
-    this.camera.updateProjectionMatrix();
+    const nfov = clamp(cs.fov + g.fovAdd, 8, 130);
+    if (this.camera.fov !== nfov) {
+      this.camera.fov = nfov;
+      this.camera.updateProjectionMatrix();
+    }
     this.camera.position.set(px + sx * shakeAmp * 0.6, py + sy * shakeAmp * 0.6, pz + sz * shakeAmp * 0.6);
     this.camera.up.set(0, 1, 0);
     this.camera.lookAt(cs.l[0], cs.l[1], cs.l[2]);
@@ -1024,8 +1033,8 @@ export class IntroEngine {
       const m = o as THREE.Mesh;
       if (m.geometry) m.geometry.dispose();
       const mat = m.material as THREE.Material | THREE.Material[] | undefined;
-      if (Array.isArray(mat)) mat.forEach((x) => x.dispose());
-      else mat?.dispose();
+      if (Array.isArray(mat)) mat.forEach((x) => (x as any).dispose());
+      else (mat as any)?.dispose();
     });
     this.disposables.forEach((d) => d.dispose());
     this.composer.dispose();
