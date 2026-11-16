@@ -36,12 +36,12 @@ export function makeGold(
   opts: { baseGlow?: number; roughness?: number; color?: number; envI?: number } = {}
 ) {
   const mat = new THREE.MeshStandardMaterial({
-    color: opts.color ?? 0xd9962b,
+    color: opts.color ?? 0xd4af37,
     metalness: 1,
-    roughness: opts.roughness ?? 0.3,
+    roughness: opts.roughness ?? 0.2,
     flatShading: false,
     envMap: env,
-    envMapIntensity: opts.envI ?? 1.5,
+    envMapIntensity: opts.envI ?? 1.0,
   });
   const u = {
     uReveal: { value: 1 },
@@ -113,7 +113,7 @@ export function makeGold(
           float k = uEdge * (wave + chg * 2.2 + sh * 5.0) * uReveal * szF;
           // уменьшена HDR-эмиссия проволоки + затухание на расстоянии (LOD)
           float distFade = 1.0 - smoothstep(40.0, 200.0, rr);
-          totalEmissiveRadiance += vec3(1.0, 0.64, 0.16) * (c * 0.9 + hl * 0.05) * k * distFade;
+          totalEmissiveRadiance += vec3(1.0, 0.64, 0.16) * (c * 0.55 + hl * 0.04) * k * distFade;
           float bg = exp(-max(vWP.y, 0.0) * 0.42);
           totalEmissiveRadiance += vec3(1.0, 0.5, 0.1) * bg * uBaseGlow * (0.8 + 0.2 * sin(uTime * 2.0 + vWP.x));
         }`
@@ -126,21 +126,21 @@ export function makeGold(
 // ───────────────────────── материал логотипа ─────────────────────────
 export function makeLogoMaterial(env: THREE.Texture) {
   const mat = new THREE.MeshStandardMaterial({
-    color: 0xffcf63,
+    color: 0xe6c229,
     metalness: 1,
-    roughness: 0.16,
+    roughness: 0.12,
     envMap: env,
-    envMapIntensity: 2.2,
+    envMapIntensity: 1.4,
     flatShading: false,
-    emissive: new THREE.Color(0x5a2a00),
-    emissiveIntensity: 0.6,
+    emissive: new THREE.Color(0x3a1a00),
+    emissiveIntensity: 0.3,
   });
   const u = {
     uWipe: { value: 4 },
     uGlow: { value: 0 },
     uMode: { value: 1 },
     uFlash: { value: 1 },
-    uEdgeCol: { value: new THREE.Vector3(1, 0.72, 0.28) },
+    uEdgeCol: { value: new THREE.Vector3(0.92, 0.78, 0.42) },
     uGlintPos: { value: -9 },
     uGlintI: { value: 0 },
   };

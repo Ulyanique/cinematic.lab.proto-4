@@ -200,7 +200,7 @@ export class IntroEngine {
       m.lookAt(0, 0, 0);
       s.add(m);
     };
-    panel(60, 60, 0, 88, 40, [1, 0.8, 0.5], 2.2); // верхний софтбокс
+    panel(60, 60, 0, 88, 40, [1, 0.88, 0.72], 1.2); // верхний софтбокс
     [
       [0, 6, 7, 1.0],
       [62, 10, 2.2, 0.9],
@@ -208,9 +208,9 @@ export class IntroEngine {
       [190, 12, 1.8, 0.8],
       [250, 6, 4.5, 1.0],
       [310, 14, 3, 0.9],
-    ].forEach(([az, el, k, w]) => panel(5 * w, 46, az, el, 42, [1, 0.72, 0.35], k));
-    panel(14, 8, 215, 28, 40, [1, 0.9, 0.7], 14); // яркий «солнечный» блик
-    panel(10, 6, 40, 20, 40, [1, 0.8, 0.5], 9);
+    ].forEach(([az, el, k, w]) => panel(5 * w, 46, az, el, 42, [1, 0.85, 0.7], k * 0.5));
+    panel(14, 8, 215, 28, 40, [1, 0.9, 0.7], 3.5); // мягкий акцентный свет
+    panel(10, 6, 40, 20, 40, [1, 0.85, 0.7], 2.0);
 
     const rt = pm.fromScene(s, 0.02);
     pm.dispose();
@@ -243,7 +243,7 @@ export class IntroEngine {
 
     // рельеф
     const terrainGeo = buildTerrain();
-    const terrain = makeGold("terrain", env, { roughness: 0.34, envI: 0.55 });
+    const terrain = makeGold("terrain", env, { roughness: 0.25, envI: 0.8 });
     this.worldMats.push({ mat: terrain.mat, base: terrain.mat.envMapIntensity });
     const tm = new THREE.Mesh(terrainGeo, terrain.mat);
     tm.frustumCulled = false;
@@ -253,13 +253,13 @@ export class IntroEngine {
     // башни и осколки
     const cross = ringCrossing(15.5);
     const { towers, shards } = buildWorldStructures(cross.angle);
-    const towerMat = makeGold("sink", env, { baseGlow: 0.55, roughness: 0.26, envI: 0.9 });
+    const towerMat = makeGold("sink", env, { baseGlow: 0.3, roughness: 0.2, envI: 0.7 });
     this.worldMats.push({ mat: towerMat.mat, base: towerMat.mat.envMapIntensity });
     const towerMesh = new THREE.Mesh(towers, towerMat.mat);
     towerMesh.frustumCulled = false;
     scene.add(towerMesh);
     this.worldMeshes.push(towerMesh);
-    const shardMat = makeGold("sink", env, { baseGlow: 0.9, roughness: 0.28, envI: 0.9 });
+    const shardMat = makeGold("sink", env, { baseGlow: 0.4, roughness: 0.22, envI: 0.7 });
     this.worldMats.push({ mat: shardMat.mat, base: shardMat.mat.envMapIntensity });
     const shardMesh = new THREE.Mesh(shards, shardMat.mat);
     shardMesh.frustumCulled = false;
@@ -354,7 +354,7 @@ export class IntroEngine {
         parts.push(sat.geo);
       }
       const bodyGeo = mergeGeometries(parts, false)!;
-      const gold = makeGold("struct", env, { baseGlow: 0.7, roughness: 0.22, envI: 1.1 });
+      const gold = makeGold("struct", env, { baseGlow: 0.4, roughness: 0.18, envI: 0.9 });
       const body = new THREE.Mesh(bodyGeo, gold.mat);
       body.frustumCulled = false;
 
@@ -564,7 +564,7 @@ export class IntroEngine {
     // осколки (физика по формуле от времени)
     {
       const count = 280;
-      const mat = makeGold("struct", env, { baseGlow: 0, roughness: 0.2, envI: 2 });
+      const mat = makeGold("struct", env, { baseGlow: 0, roughness: 0.18, envI: 0.8 });
       this.debris = new THREE.InstancedMesh(buildDebrisGeometry(), mat.mat, count);
       this.debris.frustumCulled = false;
       this.debris.visible = false;
