@@ -613,18 +613,18 @@ export function makeFinalShader() {
         col = acc / 10.0;
       }
 
-      // анаморфные стрики — мягкий порог вместо жёсткого max(s-1.3,0)
+      // анаморфные стрики — меньше тапов и шаг, меньше субпиксельного скачка
       vec3 st = vec3(0.0);
       float wsum = 0.0;
-      for (int i = -10; i <= 10; i++) {
+      for (int i = -5; i <= 5; i++) {
         float fi = float(i);
-        float w = exp(-abs(fi) * 0.32);
-        vec3 s = texture2D(tDiffuse, uv + vec2(fi * 0.011, 0.0)).rgb;
+        float w = exp(-abs(fi) * 0.45);
+        vec3 s = texture2D(tDiffuse, uv + vec2(fi * 0.008, 0.0)).rgb;
         float bright = max(dot(s, vec3(0.333)), 0.0);
         st += smoothstep(1.3, 1.9, bright) * s * w;
         wsum += w;
       }
-      col += st / wsum * uStreak * vec3(1.0, 0.72, 0.42) * 3.0;
+      col += st / wsum * uStreak * vec3(1.0, 0.72, 0.42) * 3.5;
 
       col *= uExposure;
       col = mix(col, uFlashCol * 7.0, uFlash);

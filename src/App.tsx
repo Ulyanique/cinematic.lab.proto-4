@@ -53,6 +53,8 @@ export default function App() {
     setCfg(next);
   }, []);
 
+  const getCfg = useCallback(() => cfgRef.current, []);
+
   useEffect(() => {
     const id = setTimeout(() => saveConfig(cfg), 300);
     return () => clearTimeout(id);
@@ -87,7 +89,7 @@ export default function App() {
   // ── действия над композицией ──
   const api: Api = useMemo(
     () => ({
-      cfg,
+      getCfg,
       selected,
       select: setSelected,
       setG: (k, v) => commit((c) => ({ ...c, g: { ...c.g, [k]: v } })),
@@ -147,7 +149,7 @@ export default function App() {
       toggle: () => engine.current?.toggle(),
       restart: () => engine.current?.restart(),
     }),
-    [cfg, selected, commit]
+    [selected, commit, getCfg]
   );
 
   useEffect(() => {
