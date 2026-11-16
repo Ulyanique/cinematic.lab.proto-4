@@ -132,10 +132,17 @@ export function makeLogoMaterial(env: THREE.Texture) {
     emissive: new THREE.Color(0x5a2a00),
     emissiveIntensity: 0.6,
   });
-  const u = { uWipe: { value: 4 }, uGlow: { value: 0 } };
+  const u = {
+    uWipe: { value: 4 },
+    uGlow: { value: 0 },
+    uMode: { value: 1 },
+    uFlash: { value: 1 },
+    uEdgeCol: { value: new THREE.Vector3(1, 0.72, 0.28) },
+    uGlintPos: { value: -9 },
+    uGlintI: { value: 0 },
+  };
   mat.onBeforeCompile = (shader) => {
-    shader.uniforms.uWipe = u.uWipe;
-    shader.uniforms.uGlow = u.uGlow;
+    Object.assign(shader.uniforms, u);
     shader.uniforms.uTime = G.uTime;
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", `#include <common>\nvarying vec3 vObjP;`)
@@ -144,14 +151,21 @@ export function makeLogoMaterial(env: THREE.Texture) {
       .replace(
         "#include <common>",
         `#include <common>
-        varying vec3 vObjP; uniform float uWipe; uniform float uGlow; uniform float uTime;
+        varying vec3 vObjP; uniform float uWipe, uGlow, uTime, uFlash, uGlintPos, uGlintI; uniform int uMode; uniform vec3 uEdgeCol;
         float lgHash(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }`
       )
       .replace(
         "#include <clipping_planes_fragment>",
         `#include <clipping_planes_fragment>
         float lgN = lgHash(floor(vObjP.xy * 16.0)) * 0.55 + lgHash(floor(vObjP.xy * 5.0)) * 0.3;
-        float lgM = uWipe - (vObjP.y + lgN - 0.4);
+        float lgF = 100.0;
+        if (uMode == 1) lgF = vObjP.y;
+        else if (uMode == 2) lgF = -vObjP.y - 1.9;
+        else if (uMode == 3) lgF = vObjP.x * 2.2 - 1.0;
+        else if (uMode == 4) lgF = 1.6 - length(vObjP.xy) * 1.1;
+        else if (uMode == 5) lgF = lgHash(floor(vObjP.xy * 8.0)) * 4.5 - 3.2;
+        else if (uMode == 6) lgF = vObjP.x * 1.1 + vObjP.y - 0.9;
+        float lgM = uWipe - (lgF + (uMode == 5 ? 0.0 : lgN) - 0.4);
         if (lgM > 0.0) discard;`
       )
       .replace(
@@ -159,29 +173,31 @@ export function makeLogoMaterial(env: THREE.Texture) {
         `#include <emissivemap_fragment>
         {
           float fr = 1.0 - smoothstep(0.0, 0.55, -lgM);
-          totalEmissiveRadiance += vec3(1.0, 0.72, 0.28) * fr * fr * 3.2;
+          totalEmissiveRadiance += uEdgeCol * fr * fr * 3.2 * uFlash;
           totalEmissiveRadiance += vec3(1.0, 0.6, 0.2) * uGlow;
+          float gd = (vObjP.x * 0.8 + vObjP.y * 0.6 - uGlintPos) / 0.38;
+          totalEmissiveRadiance += vec3(1.0, 0.93, 0.7) * exp(-gd * gd) * uGlintI * 2.6;
         }`
       );
   };
-  mat.customProgramCacheKey = () => "logo";
+  mat.customProgramCacheKey = () => "logo2";
   return { mat, u };
 }
 
 // ───────────────────────────── небо ─────────────────────────────
 export function makeSky() {
-  const u = { uBoom: { value: 0 } };
+  const u = { uBoom: { value: 0 }, uBright: { value: 1 } };
   const mat = new THREE.ShaderMaterial({
     side: THREE.BackSide,
     depthWrite: false,
     depthTest: false,
     fog: false,
-    uniforms: { uTime: G.uTime, uBoom: u.uBoom },
+    uniforms: { uTime: G.uTime, uBoom: u.uBoom, uBright: u.uBright },
     vertexShader: /* glsl */ `
       varying vec3 vDir;
       void main(){ vDir = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
     fragmentShader: /* glsl */ `
-      varying vec3 vDir; uniform float uTime; uniform float uBoom;
+      varying vec3 vDir; uniform float uTime; uniform float uBoom; uniform float uBright;
       ${NOISE}
       void main(){
         vec3 d = normalize(vDir);
@@ -197,7 +213,7 @@ export function makeSky() {
         col += vec3(1.0, 0.52, 0.10) * exp(-abs(h) * 16.0) * 0.45;
         col *= 1.0 + uBoom * 1.6;
         col = mix(col, hz * (1.0 + uBoom), smoothstep(0.0, -0.08, h));
-        gl_FragColor = vec4(col, 1.0);
+        gl_FragColor = vec4(col * uBright, 1.0);
       }`,
   });
   return { mat, u };
@@ -294,11 +310,12 @@ export function makeCharge(pix: number) {
     uniforms: {
       uTime: G.uTime,
       uCharge: G.uCharge,
+      uInt: { value: 1 },
       uPix: { value: pix },
       uCenter: { value: new THREE.Vector3(0, 4.3, 0) },
     },
     vertexShader: /* glsl */ `
-      attribute vec4 aSeed; uniform float uTime, uCharge, uPix; uniform vec3 uCenter; varying float vA;
+      attribute vec4 aSeed; uniform float uTime, uCharge, uPix, uInt; uniform vec3 uCenter; varying float vA;
       void main(){
         float q = fract(uTime * (0.22 + aSeed.x * 0.3) + aSeed.y);
         float ang = q * q * 5.0 * (0.4 + aSeed.z);
@@ -307,7 +324,7 @@ export function makeCharge(pix: number) {
         o *= pow(1.0 - q, 1.7);
         vec4 mv = modelViewMatrix * vec4(uCenter + o, 1.0);
         gl_Position = projectionMatrix * mv;
-        vA = uCharge * sin(q * 3.14159);
+        vA = uCharge * uInt * sin(q * 3.14159);
         gl_PointSize = clamp(60.0 * uPix * (0.4 + aSeed.w) / max(0.1, -mv.z), 1.0, 20.0 * uPix);
       }`,
     fragmentShader: /* glsl */ `
@@ -321,13 +338,14 @@ export function makeCharge(pix: number) {
 }
 
 export function makeBurst(pix: number) {
-  const u = { uT: { value: -1 } };
+  const u = { uT: { value: -1 }, uInt: { value: 1 } };
   const mat = new THREE.ShaderMaterial({
     transparent: true,
     depthWrite: false,
     blending: THREE.AdditiveBlending,
     uniforms: {
       uT: u.uT,
+      uInt: u.uInt,
       uPix: { value: pix },
       uOrigin: { value: new THREE.Vector3(0, 4.3, 0) },
     },
@@ -348,12 +366,12 @@ export function makeBurst(pix: number) {
         gl_PointSize = clamp(130.0 * uPix * (0.3 + aSeed.w) * (1.0 - 0.6 * k) / max(0.1, -mv.z), 1.0, 40.0 * uPix);
       }`,
     fragmentShader: /* glsl */ `
-      varying float vA; varying float vHeat;
+      varying float vA; varying float vHeat; uniform float uInt;
       void main(){
         float d = length(gl_PointCoord - 0.5);
         float a = smoothstep(0.5, 0.0, d);
         vec3 hot = mix(vec3(1.0, 0.35, 0.05), vec3(1.0, 0.92, 0.65), smoothstep(0.2, 1.0, vHeat));
-        gl_FragColor = vec4(hot * 3.2, a * a * vA);
+        gl_FragColor = vec4(hot * 3.2 * uInt, a * a * vA);
       }`,
   });
   return { mat, u };
@@ -499,17 +517,17 @@ export function makeBaseGlowMaterial() {
 
 /** Лучи света за логотипом */
 export function makeRaysMaterial() {
-  const u = { uPower: { value: 0 } };
+  const u = { uPower: { value: 0 }, uColor: { value: new THREE.Vector3(1, 0.66, 0.22) } };
   const mat = new THREE.ShaderMaterial({
     transparent: true,
     depthWrite: false,
     blending: THREE.AdditiveBlending,
-    uniforms: { uTime: G.uTime, uPower: u.uPower },
+    uniforms: { uTime: G.uTime, uPower: u.uPower, uColor: u.uColor },
     vertexShader: /* glsl */ `
       varying vec2 vUv;
       void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
     fragmentShader: /* glsl */ `
-      varying vec2 vUv; uniform float uTime, uPower;
+      varying vec2 vUv; uniform float uTime, uPower; uniform vec3 uColor;
       ${NOISE}
       void main(){
         vec2 p = vUv - 0.5;
@@ -520,7 +538,7 @@ export function makeRaysMaterial() {
         float shape = pow(max(0.0, 1.0 - r), 1.6);
         float v = shape * (pow(rays, 2.2) * 1.2 + pow(rays2, 3.0) * 0.8);
         float core = pow(max(0.0, 1.0 - r), 3.5) * 0.7;
-        gl_FragColor = vec4(vec3(1.0, 0.66, 0.22) * (v + core) * uPower, 1.0);
+        gl_FragColor = vec4(uColor * (v + core) * uPower, 1.0);
       }`,
   });
   return { mat, u };
@@ -543,7 +561,8 @@ export function makeGlowTexture() {
 }
 
 // ───────────────────── финальный пост-процесс ─────────────────────
-export const FinalShader = {
+export function makeFinalShader() {
+  return {
   uniforms: {
     tDiffuse: { value: null as THREE.Texture | null },
     uTime: G.uTime,
@@ -555,6 +574,13 @@ export const FinalShader = {
     uVig: { value: 0.55 },
     uStreak: { value: 0.1 },
     uRes: { value: new THREE.Vector2(1, 1) },
+    uFlashCol: { value: new THREE.Vector3(1, 0.9, 0.65) },
+    uHue: { value: 0 },
+    uSat: { value: 1 },
+    uContrast: { value: 1 },
+    uTint: { value: new THREE.Vector3(1, 0.7, 0.3) },
+    uTintAmt: { value: 0 },
+    uGrain: { value: 1 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -562,8 +588,8 @@ export const FinalShader = {
   fragmentShader: /* glsl */ `
     varying vec2 vUv;
     uniform sampler2D tDiffuse;
-    uniform float uTime, uFlash, uAberr, uZoom, uExposure, uFade, uVig, uStreak;
-    uniform vec2 uRes;
+    uniform float uTime, uFlash, uAberr, uZoom, uExposure, uFade, uVig, uStreak, uHue, uSat, uContrast, uTintAmt, uGrain;
+    uniform vec2 uRes; uniform vec3 uFlashCol, uTint;
     float fHash(vec2 p){ vec3 p3=fract(vec3(p.xyx)*.1031); p3+=dot(p3,p3.yzx+33.33); return fract((p3.x+p3.y)*p3.z); }
     vec3 aces(vec3 x){
       const float a=2.51, b=0.03, c=2.43, d=0.59, e=0.14;
@@ -601,20 +627,33 @@ export const FinalShader = {
       col += st / wsum * uStreak * vec3(1.0, 0.72, 0.42) * 6.0;
 
       col *= uExposure;
-      col = mix(col, vec3(1.0, 0.9, 0.65) * 7.0, uFlash);
+      col = mix(col, uFlashCol * 7.0, uFlash);
 
       // тон-маппинг и цветокор: тёплые тени, золотые света
       col = aces(col * 0.95);
       col = pow(col, vec3(0.97, 1.0, 1.06));
       float luma = dot(col, vec3(0.299, 0.587, 0.114));
-      col = mix(vec3(luma), col, 1.12);
+      col = mix(vec3(luma), col, 1.12 * uSat);
+      if (abs(uHue) > 0.0001) {
+        const mat3 toYIQ = mat3(0.299, 0.596, 0.211, 0.587, -0.274, -0.523, 0.114, -0.322, 0.312);
+        const mat3 toRGB = mat3(1.0, 1.0, 1.0, 0.956, -0.272, -1.106, 0.621, -0.647, 1.703);
+        vec3 yiq = toYIQ * col;
+        float hh = atan(yiq.z, yiq.y) + uHue;
+        float ch = length(yiq.yz);
+        col = toRGB * vec3(yiq.x, ch * cos(hh), ch * sin(hh));
+        col = max(col, 0.0);
+      }
+      col = mix(col, col * uTint * 1.6, uTintAmt);
+      col = (col - 0.5) * uContrast + 0.5;
+      col = max(col, 0.0);
 
       float vig = smoothstep(0.30, 0.98, length(c) * 1.25);
       col *= 1.0 - uVig * vig;
 
       col = pow(col, vec3(1.0 / 2.2));
-      col += (fHash(uv * uRes + fract(uTime) * 91.7) - 0.5) * 0.028;
+      col += (fHash(uv * uRes + fract(uTime) * 91.7) - 0.5) * 0.028 * uGrain;
       col *= uFade;
       gl_FragColor = vec4(col, 1.0);
     }`,
 };
+}

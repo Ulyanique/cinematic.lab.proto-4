@@ -97,16 +97,16 @@ export function buildLogo(mat: THREE.Material) {
   const a0 = base - (42 * Math.PI) / 180;
   const a1 = base + (42 * Math.PI) / 180;
   const arcGeo = new THREE.RingGeometry(L - 0.035, L + 0.035, 200, 1, a0, a1 - a0);
-  const arcU = { uP: { value: 0 }, uPower: { value: 1 } };
+  const arcU = { uP: { value: 0 }, uPower: { value: 1 }, uColor: { value: new THREE.Vector3(1, 0.72, 0.28) } };
   const arcMat = new THREE.ShaderMaterial({
     transparent: true,
     depthWrite: false,
     side: THREE.DoubleSide,
     blending: THREE.AdditiveBlending,
-    uniforms: { uP: arcU.uP, uPower: arcU.uPower, uTime: G.uTime },
+    uniforms: { uP: arcU.uP, uPower: arcU.uPower, uColor: arcU.uColor, uTime: G.uTime },
     vertexShader: /* glsl */ `varying vec3 vP; void main(){ vP = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
     fragmentShader: /* glsl */ `
-      varying vec3 vP; uniform float uP, uPower, uTime;
+      varying vec3 vP; uniform float uP, uPower, uTime; uniform vec3 uColor;
       ${NOISE}
       void main(){
         float a = atan(vP.y, vP.x);
@@ -118,7 +118,7 @@ export function buildLogo(mat: THREE.Material) {
         float hot = exp(-pow((t - head + 0.02) / 0.035, 2.0)) * step(uP, 0.995) * step(0.001, uP);
         float ends = pow(sin(t * 3.14159), 0.6);
         float spark = 0.75 + 0.25 * sin(t * 90.0 - uTime * 6.0);
-        vec3 col = vec3(1.0, 0.72, 0.28) * (vis * ends * spark * 1.6) + vec3(1.0, 0.95, 0.8) * hot * 4.0;
+        vec3 col = uColor * (vis * ends * spark * 1.6) + vec3(1.0, 0.95, 0.8) * hot * 4.0;
         gl_FragColor = vec4(col * uPower, 1.0);
       }`,
   });
@@ -126,5 +126,6 @@ export function buildLogo(mat: THREE.Material) {
   arc.position.z = 0;
   group.add(arc);
 
-  return { group, arcU };
+  const parts = group.children.filter((c) => c !== arc) as THREE.Mesh[];
+  return { group, arcU, arc, parts };
 }

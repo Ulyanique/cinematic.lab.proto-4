@@ -1,6 +1,5 @@
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
-import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
@@ -8,10 +7,9 @@ import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js
 import {
   CRYSTAL_COUNT,
   T_BOOM,
-  T_LOGO,
   VIDEO_SOURCES,
 } from "./config";
-import { DEG, clamp, lerp, smoothstep, easeInOutCubic, mulberry32 } from "./math";
+import { DEG, clamp, smoothstep, mulberry32 } from "./math";
 import { cameraAt, cameraAngle, ringCrossing } from "./timeline";
 import {
   SCREEN_SHAPES,
@@ -23,7 +21,7 @@ import {
   terrainSafeHeight,
 } from "./geometry";
 import {
-  FinalShader,
+  makeFinalShader,
   G,
   makeBaseGlowMaterial,
   makeBeamMaterial,
@@ -33,14 +31,14 @@ import {
   makeEmbers,
   makeGlowTexture,
   makeGold,
-  makeLogoMaterial,
-  makeRaysMaterial,
   makeRingMaterial,
   makeScreenMaterial,
   makeShellMaterial,
   makeSky,
 } from "./shaders";
-import { buildLogo } from "./logo";
+import { LogoInstance } from "./logoLayer";
+import type { Config, Layer, LayerTypeId, Settings } from "./schema";
+import { Pass } from "three/examples/jsm/postprocessing/Pass.js";
 import { makePlaceholderTexture, makeVideoTexture } from "./placeholder";
 
 const CORE_Y = 4.3;
@@ -64,6 +62,13 @@ interface CrystalObj {
   glowU: { uPower: { value: number } };
   video?: HTMLVideoElement;
   videoStarted?: boolean;
+  rank: number;
+  screenBase: number;
+  screenMesh: THREE.Mesh;
+  screenMat: THREE.ShaderMaterial;
+  aspect: number;
+  shape: [number, number][];
+  src: string | null;
 }
 
 export class IntroEngine {
@@ -95,32 +100,55 @@ export class IntroEngine {
   private rings: { mesh: THREE.Mesh; m: ReturnType<typeof makeRingMaterial>; delay: number }[] = [];
   private debris!: THREE.InstancedMesh;
   private debrisData: { dir: THREE.Vector3; speed: number; spin: THREE.Vector3; rate: number; s: number }[] = [];
-  private logo!: THREE.Group;
-  private logoMat!: ReturnType<typeof makeLogoMaterial>;
-  private logoArc!: ReturnType<typeof buildLogo>["arcU"];
-  private raysMesh!: THREE.Mesh;
-  private rays!: ReturnType<typeof makeRaysMaterial>;
-  private logoGlow!: THREE.Sprite;
   private pointLight!: THREE.PointLight;
   private disposables: { dispose(): void }[] = [];
   private worldMats: { mat: THREE.MeshStandardMaterial; base: number }[] = [];
-  private onTime?: (t: number) => void;
+  private onTime?: (t: number, playing: boolean) => void;
   private dummy = new THREE.Object3D();
   private resizeHandler = () => this.resize();
   private container: HTMLElement;
 
-  constructor(container: HTMLElement, opts: { startAt?: number; onTime?: (t: number) => void } = {}) {
+  private getCfg: () => Config;
+  private lastCfg: Config | null = null;
+  private layerMap: Partial<Record<LayerTypeId, Layer>> = {};
+  private groups: Record<"world" | "crystals" | "particles" | "explosion", THREE.Group> = {
+    world: new THREE.Group(),
+    crystals: new THREE.Group(),
+    particles: new THREE.Group(),
+    explosion: new THREE.Group(),
+  };
+  private logos = new Map<string, { inst: LogoInstance; grp: THREE.Group; layer: Layer }>();
+  private worldMeshes: THREE.Mesh[] = [];
+  private env!: THREE.Texture;
+  private glowTex!: THREE.Texture;
+  private fin!: ReturnType<typeof makeFinalShader>;
+  private fogColorKey = "";
+  private videosKey = "\u0000";
+  private dprCap = 1.75;
+  private paused = false;
+  private ended = false;
+  private resizeDirty = true;
+  onEnd?: () => void;
+
+  constructor(
+    container: HTMLElement,
+    opts: { startAt?: number; getCfg: () => Config; onTime?: (t: number, playing: boolean) => void; paused?: boolean }
+  ) {
     this.container = container;
-    this.startAt = opts.startAt ?? 0;
+    this.getCfg = opts.getCfg;
+    const g0 = this.getCfg().g;
+    this.startAt = opts.startAt ?? g0.startAt ?? 0;
     this.t = this.startAt;
     this.onTime = opts.onTime;
+    this.paused = opts.paused ?? !g0.autoplay;
 
     this.renderer = new THREE.WebGLRenderer({
       antialias: false,
       powerPreference: "high-performance",
       alpha: false,
     });
-    this.pix = Math.min(window.devicePixelRatio || 1, 1.75);
+    this.dprCap = g0.pixelRatio;
+    this.pix = Math.min(window.devicePixelRatio || 1, this.dprCap);
     this.renderer.setPixelRatio(this.pix);
     this.renderer.setClearColor(0x000000, 1);
     this.renderer.toneMapping = THREE.NoToneMapping;
@@ -209,6 +237,7 @@ export class IntroEngine {
     const tm = new THREE.Mesh(terrainGeo, terrain.mat);
     tm.frustumCulled = false;
     scene.add(tm);
+    this.worldMeshes.push(tm);
 
     // башни и осколки
     const cross = ringCrossing(15.5);
@@ -218,11 +247,13 @@ export class IntroEngine {
     const towerMesh = new THREE.Mesh(towers, towerMat.mat);
     towerMesh.frustumCulled = false;
     scene.add(towerMesh);
+    this.worldMeshes.push(towerMesh);
     const shardMat = makeGold("sink", env, { baseGlow: 0.9, roughness: 0.28, envI: 0.9 });
     this.worldMats.push({ mat: shardMat.mat, base: shardMat.mat.envMapIntensity });
     const shardMesh = new THREE.Mesh(shards, shardMat.mat);
     shardMesh.frustumCulled = false;
     scene.add(shardMesh);
+    this.worldMeshes.push(shardMesh);
 
     // 10 кристаллов-плейсхолдеров
     this.buildCrystals(env, cross.angle);
@@ -370,7 +401,6 @@ export class IntroEngine {
         }
       }
       const riseT = 7.2 + rankOf[i] * 0.62;
-      screenT = Math.max(screenT, riseT + 3.2);
 
       this.crystals.push({
         group,
@@ -379,7 +409,14 @@ export class IntroEngine {
         ry,
         H,
         riseT,
-        screenT,
+        screenT: screenT,
+        screenBase: screenT,
+        rank: rankOf[i],
+        screenMesh,
+        screenMat: sm.mat,
+        aspect: scr.aspect,
+        shape,
+        src: src,
         out: new THREE.Vector2(px, pz).normalize(),
         spin: new THREE.Vector3((rand() - 0.5) * 3, (rand() - 0.5) * 4, (rand() - 0.5) * 3),
         gold: gold.u,
@@ -537,37 +574,90 @@ export class IntroEngine {
   }
 
   private buildLogoScene(env: THREE.Texture) {
-    this.logoMat = makeLogoMaterial(env);
-    const { group, arcU } = buildLogo(this.logoMat.mat);
-    this.logoArc = arcU;
-    this.logo = group;
-    this.logo.position.set(0, 6.2, 0);
-    this.logo.scale.setScalar(1.55);
-    this.logo.visible = false;
-    this.scene.add(this.logo);
+    this.env = env;
+    this.glowTex = makeGlowTexture();
+    this.disposables.push(this.glowTex);
+    this.assignGroups();
+  }
 
-    this.rays = makeRaysMaterial();
-    this.raysMesh = new THREE.Mesh(new THREE.PlaneGeometry(34, 34), this.rays.mat);
-    this.raysMesh.position.set(0, CORE_Y + 0.2, -1.4);
-    this.raysMesh.visible = false;
-    this.scene.add(this.raysMesh);
+  // ───────────────────────────── слои ─────────────────────────────
+  private assignGroups() {
+    const G3 = this.groups;
+    this.scene.add(G3.world, G3.crystals, G3.particles, G3.explosion);
+    G3.world.add(this.skyMesh, ...this.worldMeshes);
+    this.crystals.forEach((c) => G3.crystals.add(c.group, c.beam, c.glow));
+    G3.particles.add(this.embers, this.chargePts);
+    G3.explosion.add(this.coreMesh, this.coreSprite, this.shellMesh, ...this.rings.map((r) => r.mesh), this.burstPts, this.debris);
+    Object.values(G3).forEach((g) => (g.userData = { on: false, overlay: false }));
+  }
 
-    const gt = makeGlowTexture();
-    this.disposables.push(gt);
-    this.logoGlow = new THREE.Sprite(
-      new THREE.SpriteMaterial({
-        map: gt,
-        color: new THREE.Color(1, 0.6, 0.2),
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        transparent: true,
-        fog: false,
-      })
-    );
-    this.logoGlow.position.set(0, CORE_Y + 0.3, -1.0);
-    this.logoGlow.scale.setScalar(22);
-    this.logoGlow.visible = false;
-    this.scene.add(this.logoGlow);
+  private tag(grp: THREE.Group, order: number) {
+    grp.traverse((o) => {
+      if ((o as THREE.Group).isGroup) o.renderOrder = order;
+    });
+  }
+
+  private sets(type: LayerTypeId): Settings | null {
+    const l = this.layerMap[type];
+    return l && l.on ? l.s : null;
+  }
+
+  private index(cfg: Config) {
+    this.lastCfg = cfg;
+    this.layerMap = {};
+    (Object.values(this.groups) as THREE.Group[]).forEach((g) => (g.userData = { on: false, overlay: false }));
+    const N = cfg.layers.length;
+    const seen = new Set<string>();
+    cfg.layers.forEach((L, i) => {
+      const order = (N - i) * 10;
+      if (L.type === "logo") {
+        seen.add(L.id);
+        let e = this.logos.get(L.id);
+        if (!e) {
+          const inst = new LogoInstance(this.env, this.glowTex);
+          const grp = new THREE.Group();
+          grp.add(inst.root);
+          this.scene.add(grp);
+          e = { inst, grp, layer: L };
+          this.logos.set(L.id, e);
+        }
+        e.layer = L;
+        e.grp.userData = { on: L.on, overlay: !!L.s.overlay };
+        this.tag(e.grp, order);
+      } else if (L.type in this.groups && !this.layerMap[L.type]) {
+        this.layerMap[L.type] = L;
+        const grp = this.groups[L.type as keyof typeof this.groups];
+        grp.userData = { on: L.on, overlay: !!L.s.overlay };
+        this.tag(grp, order);
+      }
+    });
+    for (const [id, e] of this.logos) {
+      if (!seen.has(id)) {
+        this.scene.remove(e.grp);
+        e.inst.dispose();
+        this.logos.delete(id);
+      }
+    }
+  }
+
+  /** Рендер стека 3D-слоёв: общий проход + отдельные проходы для «overlay»-слоёв */
+  renderStack(renderer: THREE.WebGLRenderer, target: THREE.WebGLRenderTarget) {
+    const ac = renderer.autoClear;
+    renderer.autoClear = false;
+    renderer.setRenderTarget(target);
+    renderer.setClearColor(0x000000, 1);
+    renderer.clear(true, true, true);
+    const all: THREE.Group[] = [...Object.values(this.groups), ...[...this.logos.values()].map((e) => e.grp)];
+    for (const g of all) g.visible = !!g.userData.on && !g.userData.overlay;
+    renderer.render(this.scene, this.camera);
+    for (const g of all) {
+      if (g.userData.on && g.userData.overlay) {
+        for (const o of all) o.visible = o === g;
+        renderer.clearDepth();
+        renderer.render(this.scene, this.camera);
+      }
+    }
+    renderer.autoClear = ac;
   }
 
   // ───────────────────────────── пост-процесс ─────────────────────────────
@@ -577,17 +667,28 @@ export class IntroEngine {
       samples: 4,
     });
     this.composer = new EffectComposer(this.renderer, rt);
-    this.composer.addPass(new RenderPass(this.scene, this.camera));
+    this.composer.addPass(new StackPass(this));
     this.bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.5, 0.6, 1.0);
     this.composer.addPass(this.bloom);
+    this.fin = makeFinalShader();
     this.finalPass = new ShaderPass(
       new THREE.ShaderMaterial({
-        uniforms: FinalShader.uniforms,
-        vertexShader: FinalShader.vertexShader,
-        fragmentShader: FinalShader.fragmentShader,
+        uniforms: this.fin.uniforms,
+        vertexShader: this.fin.vertexShader,
+        fragmentShader: this.fin.fragmentShader,
       })
     );
     this.composer.addPass(this.finalPass);
+  }
+
+  private applyPix() {
+    this.pix = Math.min(window.devicePixelRatio || 1, this.dprCap);
+    this.renderer.setPixelRatio(this.pix);
+    [this.embers.material, this.chargePts.material, this.burst.mat].forEach((m) => {
+      const u = (m as THREE.ShaderMaterial).uniforms;
+      if (u.uPix) u.uPix.value = this.pix;
+    });
+    this.resize();
   }
 
   private resize() {
@@ -598,230 +699,327 @@ export class IntroEngine {
     this.composer.setSize(w, h);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
-    FinalShader.uniforms.uRes.value.set(w * this.pix, h * this.pix);
+    this.fin.uniforms.uRes.value.set(w * this.pix, h * this.pix);
+    this.resizeDirty = true;
   }
 
-  // ───────────────────────────── кадр ─────────────────────────────
+  // ───────────────────────────── кадр / время ─────────────────────────────
+  private lastT = -1;
+  private lastRenderedCfg: Config | null = null;
+
   private loop = () => {
     if (this.disposed) return;
     const now = performance.now();
-    const dt = Math.min(0.1, (now - this.last) / 1000);
+    const rdt = Math.min(0.1, (now - this.last) / 1000);
     this.last = now;
-    this.t += dt;
-    this.update(this.t);
-    this.composer.render();
-    this.onTime?.(this.t);
+    const cfg = this.getCfg();
+    if (!this.paused) {
+      this.t += rdt * cfg.g.speed;
+      if (cfg.g.loop && this.t >= cfg.g.duration) this.seek(cfg.g.startAt);
+      if (!this.ended && this.t >= cfg.g.duration) {
+        this.ended = true;
+        this.onEnd?.();
+      }
+    }
+    if (!this.paused || cfg !== this.lastRenderedCfg || this.t !== this.lastT || this.resizeDirty) {
+      this.lastRenderedCfg = cfg;
+      this.lastT = this.t;
+      this.resizeDirty = false;
+      this.update(this.t);
+      this.composer.render();
+    }
+    this.onTime?.(this.t, !this.paused);
     this.raf = requestAnimationFrame(this.loop);
   };
 
   seek(t: number) {
-    this.t = t;
-    this.crystals.forEach((c) => (c.videoStarted = false));
+    this.t = Math.max(0, t);
+    this.ended = false;
+    this.crystals.forEach((c) => {
+      c.videoStarted = false;
+      if (c.video) c.video.pause();
+    });
   }
 
   restart() {
-    this.seek(0);
+    this.seek(this.getCfg().g.startAt);
+    this.paused = false;
+  }
+
+  play() {
+    this.paused = false;
+  }
+  pause() {
+    this.paused = true;
+    this.crystals.forEach((c) => c.video?.pause());
+    this.crystals.forEach((c) => (c.videoStarted = false));
+  }
+  toggle() {
+    if (this.paused) this.play();
+    else this.pause();
   }
 
   get time() {
     return this.t;
   }
+  get playing() {
+    return !this.paused;
+  }
+
+  private applyVideos(text: string) {
+    const lines = text.split(/\r?\n/).map((l) => l.trim());
+    const aniso = this.renderer.capabilities.getMaxAnisotropy();
+    this.crystals.forEach((c, i) => {
+      const url = lines[i] || null;
+      if (url === c.src) return;
+      c.video?.pause();
+      let tex: THREE.Texture;
+      if (url) {
+        const v = makeVideoTexture(url, aniso);
+        tex = v.tex;
+        c.video = v.video;
+      } else {
+        tex = makePlaceholderTexture(i, c.aspect, c.shape, aniso);
+        c.video = undefined;
+      }
+      this.disposables.push(tex);
+      c.screenMat.uniforms.uTex.value = tex;
+      c.screenMat.uniforms.uVideo.value = url ? 1 : 0;
+      c.videoStarted = false;
+      c.src = url;
+    });
+  }
 
   private update(t: number) {
+    const cfg = this.getCfg();
+    if (cfg !== this.lastCfg) this.index(cfg);
+    const g = cfg.g;
+    const W = this.sets("world");
+    const CR = this.sets("crystals");
+    const PA = this.sets("particles");
+    const EX = this.sets("explosion");
+    const exOn = !!EX;
+    if (g.pixelRatio !== this.dprCap) {
+      this.dprCap = g.pixelRatio;
+      this.applyPix();
+    }
+
     const q = t - T_BOOM;
+    const qc = exOn ? q : Math.min(q, 0);
     G.uTime.value = t;
 
     // ─── камера ───
     const cs = cameraAt(t);
     let [px, py, pz] = cs.p;
-    py = Math.max(py, terrainSafeHeight(px, pz) + 1.8);
+    const safe = terrainSafeHeight(px, pz);
+    py = Math.max(Math.max(py, safe + 1.8) + g.heightAdd, safe + 0.9);
     const shakeAmp =
-      0.035 +
-      0.05 * smoothstep(25, T_BOOM, t) +
-      (q > 0 ? 0.9 * Math.exp(-q * 2.6) : 0);
+      (0.035 + 0.05 * smoothstep(25, T_BOOM, t) + (q > 0 && EX ? 0.9 * Math.exp(-q * 2.6) * EX.camShake : 0)) * g.shake;
     const sx = Math.sin(t * 13.1) * 0.6 + Math.sin(t * 31.7 + 1.3) * 0.4;
     const sy = Math.sin(t * 11.3 + 2.0) * 0.6 + Math.sin(t * 27.9) * 0.4;
     const sz = Math.sin(t * 9.7 + 4.0) * 0.6 + Math.sin(t * 23.3 + 0.6) * 0.4;
-    this.camera.fov = cs.fov;
+    this.camera.fov = clamp(cs.fov + g.fovAdd, 8, 130);
     this.camera.updateProjectionMatrix();
     this.camera.position.set(px + sx * shakeAmp * 0.6, py + sy * shakeAmp * 0.6, pz + sz * shakeAmp * 0.6);
     this.camera.up.set(0, 1, 0);
     this.camera.lookAt(cs.l[0], cs.l[1], cs.l[2]);
-    this.camera.rotateZ(cs.roll + sz * shakeAmp * 0.012);
+    this.camera.rotateZ(cs.roll * g.roll + sz * shakeAmp * 0.012);
     this.camera.rotateX(sy * shakeAmp * 0.006);
     this.skyMesh.position.copy(this.camera.position);
 
+    // ─── мир ───
+    if (W) {
+      const fog = this.scene.fog as THREE.FogExp2;
+      fog.density = W.fogDensity;
+      if (this.fogColorKey !== W.fogColor) {
+        this.fogColorKey = W.fogColor;
+        fog.color.set(W.fogColor);
+      }
+    }
+    this.sky.u.uBright.value = W ? W.skyBright : 1;
+
     // ─── фазы взрыва ───
     const charge = q < 0 ? smoothstep(22.5, T_BOOM - 0.2, t) : 0;
-    const flash = q < 0 ? smoothstep(-0.5, 0, q) * 0.92 : Math.exp(-q * 3.6);
+    const flash = EX ? (q < 0 ? smoothstep(-0.5, 0, q) * 0.92 : Math.exp(-q * 3.6)) * EX.flash : 0;
     G.uCharge.value = charge;
     G.uShockR.value = q > 0 ? q * 50 : 0;
-    G.uShockA.value = q > 0 ? 2.6 * Math.exp(-q * 0.55) : 0;
+    G.uShockA.value = (q > 0 && exOn ? 2.6 * Math.exp(-q * 0.55) : 0) * (W ? W.shock : 1);
     G.uEdge.value =
-      (0.2 + 0.8 * smoothstep(0, 5.5, t)) * (q > 0 ? 1 - 0.7 * smoothstep(0.8, 4.0, q) : 1) *
-      (1 + (q < 0 ? charge * 0.6 : 0));
-    this.sky.u.uBoom.value = q < 0 ? charge * 0.25 : 1.2 * Math.exp(-q * 1.5);
+      (0.2 + 0.8 * smoothstep(0, 5.5, t)) * (qc > 0 ? 1 - 0.7 * smoothstep(0.8, 4.0, qc) : 1) *
+      (1 + (q < 0 ? charge * 0.6 : 0)) * (W ? W.edge : 1);
+    this.sky.u.uBoom.value = exOn ? (q < 0 ? charge * 0.25 : 1.2 * Math.exp(-q * 1.5)) : 0;
 
     // ─── кристаллы ───
+    if (CR && CR.videos !== this.videosKey) {
+      this.videosKey = CR.videos;
+      this.applyVideos(CR.videos);
+    }
     const pulse = 0.5 + 0.5 * Math.sin(t * 2.2);
-    for (let i = 0; i < this.crystals.length; i++) {
-      const c = this.crystals[i];
-      const p = clamp((t - c.riseT) / 2.8);
-      const visible = p > 0 && !(q > 7);
-      c.group.visible = visible;
-      c.beam.visible = visible;
-      c.glow.visible = visible;
-      if (!visible) continue;
-      const e = 1 - Math.pow(2, -9 * p);
-      const y = BASE_Y - (c.H + 2.5) * (1 - e);
-      c.group.rotation.set(0, c.ry + (1 - e) * 0.7, 0);
-      c.group.position.set(c.px, y, c.pz);
-      c.group.scale.setScalar(1);
-      c.gold.uReveal.value = smoothstep(0.0, 0.9, p);
-      c.gold.uBaseGlow.value = smoothstep(0.05, 0.6, p) * (0.85 + 0.3 * pulse) * (1 + charge * 1.4);
-      const flare = Math.exp(-Math.pow((t - c.riseT - 0.8) / 0.55, 2)) * 2.2;
-      let glowP = smoothstep(0, 0.4, p) * (0.8 + flare) * (1 + charge * 1.2);
-      let beamP = smoothstep(0.25, 1, p) * (0.8 + charge * 1.0) * (0.7 + 0.3 * pulse);
-      c.screen.uOn.value = clamp((t - c.screenT) / 1.15);
-      c.screen.uFlick.value = (0.95 + 0.05 * Math.sin(t * 40 + i * 3)) * (1 + charge * 0.6);
+    if (CR) {
+      for (let i = 0; i < this.crystals.length; i++) {
+        const c = this.crystals[i];
+        const riseT = 7.2 + c.rank * CR.riseGap + CR.riseShift;
+        const screenT = Math.max(c.screenBase + CR.riseShift, riseT + CR.riseDur + 0.4);
+        const p = clamp((t - riseT) / CR.riseDur);
+        const visible = p > 0 && !(qc > 7);
+        c.group.visible = visible;
+        c.beam.visible = visible;
+        c.glow.visible = visible;
+        c.screenMesh.visible = !!CR.screens;
+        if (!visible) continue;
+        const e = 1 - Math.pow(2, -9 * p);
+        const y = BASE_Y - (c.H + 2.5) * (1 - e);
+        c.group.rotation.set(0, c.ry + (1 - e) * 0.7, 0);
+        c.group.position.set(c.px, y, c.pz);
+        c.group.scale.setScalar(CR.scale);
+        c.gold.uReveal.value = smoothstep(0.0, 0.9, p);
+        c.gold.uBaseGlow.value = smoothstep(0.05, 0.6, p) * (0.85 + 0.3 * pulse) * (1 + charge * 1.4) * CR.baseGlow;
+        const flare = Math.exp(-Math.pow((t - riseT - 0.8) / 0.55, 2)) * 2.2;
+        let glowP = smoothstep(0, 0.4, p) * (0.8 + flare) * (1 + charge * 1.2) * CR.glow;
+        let beamP = smoothstep(0.25, 1, p) * (0.8 + charge * 1.0) * (0.7 + 0.3 * pulse) * CR.beam;
+        c.screen.uOn.value = clamp((t - screenT) / 1.15);
+        c.screen.uFlick.value = (0.95 + 0.05 * Math.sin(t * 40 + i * 3)) * (1 + charge * 0.6) * CR.screenBright;
 
-      if (q > 0) {
-        const ease = 1 - Math.exp(-q * 1.5);
-        const dist = 34 + i * 2.5;
-        c.group.position.set(
-          c.px + c.out.x * ease * dist,
-          y + ease * (9 + i * 0.9) - 2.2 * q * q,
-          c.pz + c.out.y * ease * dist
-        );
-        c.group.rotation.set(q * c.spin.x, c.ry + q * c.spin.y, q * c.spin.z);
-        c.group.scale.setScalar(Math.max(0.001, 1 - Math.max(0, q - 1.2) * 0.32));
-        c.screen.uOn.value = clamp(1 - q * 2.4);
-        c.screen.uFlick.value = 1 + 3 * Math.exp(-q * 8);
-        const f = Math.exp(-q * 2.6);
-        glowP *= f;
-        beamP *= f;
-      }
-      c.glowU.uPower.value = glowP;
-      c.beamU.uPower.value = beamP;
+        if (qc > 0) {
+          const ease = 1 - Math.exp(-qc * 1.5);
+          const dist = 34 + i * 2.5;
+          c.group.position.set(
+            c.px + c.out.x * ease * dist,
+            y + ease * (9 + i * 0.9) - 2.2 * qc * qc,
+            c.pz + c.out.y * ease * dist
+          );
+          c.group.rotation.set(qc * c.spin.x, c.ry + qc * c.spin.y, qc * c.spin.z);
+          c.group.scale.setScalar(Math.max(0.001, 1 - Math.max(0, qc - 1.2) * 0.32) * CR.scale);
+          c.screen.uOn.value = clamp(1 - qc * 2.4);
+          c.screen.uFlick.value = (1 + 3 * Math.exp(-qc * 8)) * CR.screenBright;
+          const f = Math.exp(-qc * 2.6);
+          glowP *= f;
+          beamP *= f;
+        }
+        c.glowU.uPower.value = glowP;
+        c.beamU.uPower.value = beamP;
 
-      if (c.video && !c.videoStarted && c.screen.uOn.value > 0.01) {
-        c.videoStarted = true;
-        c.video.currentTime = 0;
-        c.video.play().catch(() => undefined);
+        if (c.video && !c.videoStarted && c.screen.uOn.value > 0.01 && !this.paused) {
+          c.videoStarted = true;
+          c.video.currentTime = 0;
+          c.video.play().catch(() => undefined);
+        }
       }
     }
 
     // ─── затемнение мира после взрыва ───
-    const dim = q > 0 ? smoothstep(0.4, 3.5, q) : 0;
-    this.worldMats.forEach((w) => (w.mat.envMapIntensity = w.base * (1 - 0.7 * dim)));
+    const dim = q > 0 && exOn ? smoothstep(0.4, 3.5, q) : 0;
+    const envK = W ? W.env : 1;
+    this.worldMats.forEach((w) => (w.mat.envMapIntensity = w.base * envK * (1 - 0.7 * dim)));
 
-    // ─── эмберы ───
-    (this.embers.material as THREE.ShaderMaterial).uniforms.uInt.value =
-      smoothstep(0, 3, t) * (1 + (q > 0 ? 0.8 * Math.exp(-q * 0.4) : 0));
+    // ─── частицы ───
+    const embU = (this.embers.material as THREE.ShaderMaterial).uniforms;
+    embU.uInt.value = PA ? smoothstep(0, 3, t) * (1 + (q > 0 ? 0.8 * Math.exp(-q * 0.4) : 0)) * PA.embers : 0;
+    embU.uSize.value = PA ? PA.emberSize : 70;
+    (this.chargePts.material as THREE.ShaderMaterial).uniforms.uInt.value = PA ? PA.charge : 0;
 
-    // ─── ядро ───
-    const coreOn = t > 24.2 && q < 3.2;
+    // ─── взрыв ───
+    const ex = EX ?? { core: 1, light: 0, wave: 0, sparks: 0, debris: false, debrisSize: 1, zoomBlur: 1 };
+    const coreOn = exOn && t > 24.2 && q < 3.2;
     this.coreMesh.visible = coreOn;
-    this.coreSprite.visible = t > 24.2 && q < 4.5;
+    this.coreSprite.visible = exOn && t > 24.2 && q < 4.5;
     if (coreOn) {
       if (q < 0) {
         const k = smoothstep(24.2, T_BOOM, t);
-        this.coreMesh.scale.setScalar(0.05 + 1.5 * k * k);
+        this.coreMesh.scale.setScalar((0.05 + 1.5 * k * k) * ex.core);
         this.core.u.uPower.value = 0.2 + 1.8 * k;
       } else {
         const r = 1.55 + 16 * (1 - Math.exp(-q * 3.6));
-        this.coreMesh.scale.setScalar(r);
+        this.coreMesh.scale.setScalar(r * ex.core);
         this.core.u.uPower.value = 3.0 * Math.exp(-q * 2.6);
       }
     }
     if (this.coreSprite.visible) {
       const k = smoothstep(24.2, T_BOOM, t);
-      const s = q < 0 ? 2 + 14 * k * k : 16 + 40 * (1 - Math.exp(-q * 2)) ;
-      this.coreSprite.scale.setScalar(s);
+      const s = q < 0 ? 2 + 14 * k * k : 16 + 40 * (1 - Math.exp(-q * 2));
+      this.coreSprite.scale.setScalar(s * ex.core);
       const pw = q < 0 ? 0.3 + 1.7 * k : 2.2 * Math.exp(-q * 1.6);
       this.coreSprite.material.color.setRGB(1.0 * pw, 0.72 * pw, 0.32 * pw);
     }
-    this.pointLight.intensity = q < 0 ? 900 * charge * charge : 6000 * Math.exp(-q * 2.2);
+    this.pointLight.intensity = (q < 0 ? 900 * charge * charge : 6000 * Math.exp(-q * 2.2)) * ex.light;
 
-    // ─── ударные волны ───
-    this.shellMesh.visible = q > 0 && q < 5;
+    this.shellMesh.visible = exOn && q > 0 && q < 5;
     if (this.shellMesh.visible) {
       this.shellMesh.scale.setScalar(3 + 95 * (1 - Math.exp(-q * 1.35)));
-      this.shell.u.uPower.value = 1.5 * Math.exp(-q * 1.4);
+      this.shell.u.uPower.value = 1.5 * Math.exp(-q * 1.4) * ex.wave;
     }
     this.rings.forEach((r) => {
       const qq = q - r.delay;
-      r.mesh.visible = qq > 0 && qq < 5.2;
+      r.mesh.visible = exOn && qq > 0 && qq < 5.2;
       if (r.mesh.visible) {
         r.m.u.uR.value = qq * 50;
-        r.m.u.uPower.value = smoothstep(0, 0.06, qq) * (r.delay > 0 ? 0.6 : 1);
+        r.m.u.uPower.value = smoothstep(0, 0.06, qq) * (r.delay > 0 ? 0.6 : 1) * ex.wave;
         r.mesh.position.y = 1.3;
       }
     });
 
-    // ─── искры ───
-    this.burstPts.visible = q > 0 && q < 8;
+    this.burstPts.visible = exOn && q > 0 && q < 8 && ex.sparks > 0;
     this.burst.u.uT.value = q;
+    this.burst.u.uInt.value = ex.sparks;
 
-    // ─── осколки ───
-    this.debris.visible = q > 0 && q < 9;
+    this.debris.visible = exOn && ex.debris && q > 0 && q < 9;
     if (this.debris.visible) {
       for (let i = 0; i < this.debrisData.length; i++) {
         const d = this.debrisData[i];
         const dd = 1.1;
-        const dist = d.speed * (1 - Math.exp(-dd * q)) / dd;
-        this.dummy.position.set(
-          d.dir.x * dist,
-          CORE_Y + d.dir.y * dist - 0.5 * 5 * q * q,
-          d.dir.z * dist
-        );
+        const dist = (d.speed * (1 - Math.exp(-dd * q))) / dd;
+        this.dummy.position.set(d.dir.x * dist, CORE_Y + d.dir.y * dist - 0.5 * 5 * q * q, d.dir.z * dist);
         this.dummy.quaternion.setFromAxisAngle(d.spin, q * d.rate);
-        this.dummy.scale.setScalar(d.s * clamp(1 - (q - 3.5) / 5));
+        this.dummy.scale.setScalar(d.s * clamp(1 - (q - 3.5) / 5) * ex.debrisSize);
         this.dummy.updateMatrix();
         this.debris.setMatrixAt(i, this.dummy.matrix);
       }
       this.debris.instanceMatrix.needsUpdate = true;
     }
 
-    // ─── логотип ───
-    const lq = t - T_LOGO;
-    this.logo.visible = lq > 0;
-    this.raysMesh.visible = lq > 0.3;
-    this.logoGlow.visible = lq > 0.0;
-    if (this.logo.visible) {
-      const wp = easeInOutCubic(lq / 3.4);
-      this.logoMat.u.uWipe.value = lerp(2.0, -4.4, wp);
-      this.logoMat.u.uGlow.value = 0.18 + 0.1 * Math.sin(t * 1.4) + 1.2 * Math.exp(-Math.pow((lq - 3.4) / 0.5, 2));
-      this.logoArc.uP.value = easeInOutCubic((lq - 1.5) / 2.6);
-      const settle = smoothstep(0, 2.5, lq);
-      this.logo.rotation.y = Math.sin(t * 0.55) * 0.3 * settle + (1 - settle) * 0.9;
-      this.logo.rotation.x = Math.sin(t * 0.43) * 0.05 * settle;
-      this.logo.scale.setScalar(1.55 * (1 + 0.1 * Math.exp(-lq * 1.8)));
-      this.rays.u.uPower.value = smoothstep(0.4, 3.2, lq) * (0.55 + 0.1 * Math.sin(t * 1.2));
-      const gp = smoothstep(0, 2.5, lq) * (0.38 + 0.05 * Math.sin(t * 1.7));
-      this.logoGlow.material.color.setRGB(1.0 * gp, 0.6 * gp, 0.2 * gp);
-    }
+    // ─── логотипы ───
+    for (const e of this.logos.values()) if (e.layer.on) e.inst.update(t, e.layer.s);
 
     // ─── финальный проход ───
-    const U = FinalShader.uniforms;
+    const U = this.fin.uniforms;
     const dPhase = smoothstep(26, T_BOOM, t);
     U.uFlash.value = flash;
-    U.uAberr.value = 0.0007 + 0.004 * dPhase + 0.012 * flash;
-    U.uZoom.value = q < 0 ? 0.1 * smoothstep(27.2, T_BOOM - 0.1, t) : 0.28 * Math.exp(-q * 3.0);
-    U.uExposure.value = (q > 0 ? 1 - 0.15 * smoothstep(0.5, 4, q) : 1) * 0.85;
-    U.uFade.value = Math.pow(smoothstep(0, 2.6, t), 1.4);
-    U.uVig.value = 0.55 + 0.15 * dPhase + 0.25 * dim;
-    U.uStreak.value = 0.1 + 0.4 * flash;
-    this.bloom.strength = 0.42 + 1.5 * flash + 0.25 * charge;
-    this.bloom.radius = 0.6;
-    this.bloom.threshold = 1.0;
+    if (EX && this.flashKey !== EX.flashColor) {
+      this.flashKey = EX.flashColor;
+      const c = new THREE.Color(EX.flashColor);
+      U.uFlashCol.value.set(c.r, c.g, c.b);
+    }
+    U.uAberr.value = (0.0007 + 0.004 * dPhase + 0.012 * flash) * g.aberration;
+    U.uZoom.value = q < 0 ? 0.1 * smoothstep(27.2, T_BOOM - 0.1, t) * ex.zoomBlur : 0.28 * Math.exp(-q * 3.0) * (exOn ? ex.zoomBlur : 0);
+    U.uExposure.value = (q > 0 && exOn ? 1 - 0.15 * smoothstep(0.5, 4, q) : 1) * 0.85 * g.exposure;
+    const fadeOut = g.fadeOut > 0 ? 1 - smoothstep(g.duration - g.fadeOut, g.duration, t) : 1;
+    U.uFade.value = Math.pow(smoothstep(0, Math.max(0.01, g.fadeIn), t), 1.4) * fadeOut;
+    U.uVig.value = (0.55 + 0.15 * dPhase + 0.25 * dim) * g.vignette;
+    U.uStreak.value = (0.1 + 0.4 * flash) * g.streak;
+    U.uHue.value = g.hue * DEG;
+    U.uSat.value = g.saturation;
+    U.uContrast.value = g.contrast;
+    U.uTintAmt.value = g.tintAmount;
+    if (this.tintKey !== g.tint) {
+      this.tintKey = g.tint;
+      const c = new THREE.Color(g.tint);
+      U.uTint.value.set(c.r, c.g, c.b);
+    }
+    U.uGrain.value = g.grain;
+    this.bloom.strength = (0.42 + 1.5 * flash + 0.25 * charge) * g.bloom;
+    this.bloom.radius = g.bloomRadius;
+    this.bloom.threshold = g.bloomThreshold;
   }
+
+  private flashKey = "";
+  private tintKey = "";
 
   dispose() {
     this.disposed = true;
     cancelAnimationFrame(this.raf);
     window.removeEventListener("resize", this.resizeHandler);
     this.crystals.forEach((c) => c.video?.pause());
+    this.logos.forEach((e) => e.inst.dispose());
     this.scene.traverse((o) => {
       const m = o as THREE.Mesh;
       if (m.geometry) m.geometry.dispose();
@@ -832,6 +1030,19 @@ export class IntroEngine {
     this.disposables.forEach((d) => d.dispose());
     this.composer.dispose();
     this.renderer.dispose();
+    this.renderer.forceContextLoss();
     this.renderer.domElement.remove();
+  }
+}
+
+class StackPass extends Pass {
+  private eng: IntroEngine;
+  constructor(eng: IntroEngine) {
+    super();
+    this.eng = eng;
+    this.needsSwap = false;
+  }
+  render(renderer: THREE.WebGLRenderer, _write: THREE.WebGLRenderTarget, read: THREE.WebGLRenderTarget) {
+    this.eng.renderStack(renderer, read);
   }
 }

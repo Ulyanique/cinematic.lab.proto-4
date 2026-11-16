@@ -1,73 +1,77 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { IntroEngine } from "./intro/engine";
-import { BRAND, TAGLINE, T_BOOM, T_LOGO } from "./intro/config";
-import { smoothstep } from "./intro/math";
+import {
+  LAYER_TYPES,
+  defaultConfig,
+  makeLayer,
+  newId,
+  normalizeConfig,
+  type Config,
+  type LayerTypeId,
+} from "./intro/schema";
+import { Overlays } from "./ui/Overlays";
+import {
+  CompositionPanel,
+  IconGear,
+  IconLayers,
+  IconPause,
+  IconPlay,
+  IconRestart,
+  SettingsPanel,
+  ToolBtn,
+  type Api,
+  type Tab,
+} from "./ui/Panels";
+import { loadConfig, saveConfig, timeBus, useTime } from "./ui/store";
 
-const fmt = (t: number) => {
-  const s = Math.max(0, Math.floor(t));
-  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
-};
+declare global {
+  interface Window {
+    __intro?: IntroEngine;
+    __lab?: { getCfg: () => Config; replace: (c: unknown) => string | null; engine: () => IntroEngine | null };
+  }
+}
 
 export default function App() {
   const host = useRef<HTMLDivElement>(null);
   const engine = useRef<IntroEngine | null>(null);
-  const brandRef = useRef<HTMLDivElement>(null);
-  const tagRef = useRef<HTMLDivElement>(null);
-  const topBar = useRef<HTMLDivElement>(null);
-  const botBar = useRef<HTMLDivElement>(null);
-  const timeRef = useRef<HTMLSpanElement>(null);
-  const progRef = useRef<HTMLDivElement>(null);
-  const hudRef = useRef<HTMLDivElement>(null);
+  const [cfg, setCfg] = useState<Config>(loadConfig);
+  const cfgRef = useRef(cfg);
   const [error, setError] = useState<string | null>(null);
-  const [canReplay, setCanReplay] = useState(false);
-  const replayShown = useRef(false);
+  const [selected, setSelected] = useState<string | null>("logo");
+  const [openSet, setOpenSet] = useState(false);
+  const [openComp, setOpenComp] = useState(false);
+  const [tab, setTab] = useState<Tab>("general");
+  const params = useMemo(() => new URLSearchParams(window.location.search), []);
+  const [uiVisible, setUiVisible] = useState(params.get("ui") !== "0");
+  const [idle, setIdle] = useState(false);
+  const [playing, setPlaying] = useState(false);
 
-  const replay = useCallback(() => {
-    engine.current?.restart();
-    replayShown.current = false;
-    setCanReplay(false);
+  // синхронная фиксация конфига (движок читает cfgRef каждый кадр)
+  const commit = useCallback((fn: (c: Config) => Config) => {
+    const next = fn(cfgRef.current);
+    cfgRef.current = next;
+    setCfg(next);
   }, []);
 
   useEffect(() => {
-    if (!host.current) return;
-    const params = new URLSearchParams(window.location.search);
-    const startAt = parseFloat(params.get("t") ?? "0") || 0;
-    const total = T_LOGO + 8;
-    let lastTime = -1;
+    const id = setTimeout(() => saveConfig(cfg), 300);
+    return () => clearTimeout(id);
+  }, [cfg]);
 
+  // ── движок ──
+  useEffect(() => {
+    if (!host.current) return;
     try {
+      const g = cfgRef.current.g;
+      const startAt = params.has("t") ? parseFloat(params.get("t") ?? "0") || 0 : g.startAt;
       const eng = new IntroEngine(host.current, {
         startAt,
-        onTime: (t) => {
-          // лёгкий HUD напрямую в DOM — без перерисовок React
-          const bars = 6.2 * smoothstep(0, 1.2, t) * (1 - smoothstep(T_BOOM + 0.2, T_BOOM + 3.2, t));
-          if (topBar.current) topBar.current.style.height = `${bars}vh`;
-          if (botBar.current) botBar.current.style.height = `${bars}vh`;
-
-          const b = smoothstep(T_LOGO + 3.0, T_LOGO + 5.2, t);
-          if (brandRef.current) {
-            brandRef.current.style.opacity = String(b);
-            brandRef.current.style.letterSpacing = `${0.9 - 0.35 * b}em`;
-            brandRef.current.style.transform = `translateY(${(1 - b) * 10}px)`;
-          }
-          if (tagRef.current) tagRef.current.style.opacity = String(smoothstep(T_LOGO + 4.2, T_LOGO + 6.2, t) * 0.8);
-
-          if (progRef.current) progRef.current.style.transform = `scaleX(${Math.min(1, t / total)})`;
-          if (hudRef.current) hudRef.current.style.opacity = String(0.8 * (1 - smoothstep(T_LOGO + 2, T_LOGO + 4, t)) + 0.15);
-          const sec = Math.floor(t);
-          if (sec !== lastTime) {
-            lastTime = sec;
-            if (timeRef.current) timeRef.current.textContent = fmt(t);
-          }
-          const show = t > T_LOGO + 6;
-          if (show !== replayShown.current) {
-            replayShown.current = show;
-            setCanReplay(show);
-          }
-        },
+        getCfg: () => cfgRef.current,
+        onTime: (t, p) => timeBus.emit(t, p),
+        paused: params.has("freeze") ? true : !g.autoplay,
       });
       engine.current = eng;
-      (window as unknown as { __intro: IntroEngine }).__intro = eng;
+      window.__intro = eng;
       return () => {
         eng.dispose();
         engine.current = null;
@@ -76,77 +80,152 @@ export default function App() {
       console.error(e);
       setError("Не удалось запустить WebGL. Попробуйте другой браузер или включите аппаратное ускорение.");
     }
-  }, []);
+  }, [params]);
+
+  useTime((_, p) => setPlaying(p));
+
+  // ── действия над композицией ──
+  const api: Api = useMemo(
+    () => ({
+      cfg,
+      selected,
+      select: setSelected,
+      setG: (k, v) => commit((c) => ({ ...c, g: { ...c.g, [k]: v } })),
+      setS: (id, k, v) =>
+        commit((c) => ({
+          ...c,
+          layers: c.layers.map((l) => {
+            if (l.id !== id) return l;
+            const def = LAYER_TYPES[l.type];
+            let s = { ...l.s, [k]: v };
+            if (def.presetKey === k) {
+              const p = def.presets?.find((x) => x.key === v);
+              if (p) s = { ...s, ...p.values };
+            }
+            return { ...l, s };
+          }),
+        })),
+      patchLayer: (id, p) => commit((c) => ({ ...c, layers: c.layers.map((l) => (l.id === id ? { ...l, ...p } : l)) })),
+      move: (from, to) =>
+        commit((c) => {
+          const arr = [...c.layers];
+          const [it] = arr.splice(from, 1);
+          arr.splice(to, 0, it);
+          return { ...c, layers: arr };
+        }),
+      add: (t: LayerTypeId) => {
+        const L = makeLayer(t, t === "text" ? "Новый текст" : t === "logo" ? "Новый логотип" : undefined, t === "text" ? { text: "TITLE", y: 50, delay: 0, anchor: "logo" } : {});
+        commit((c) => ({ ...c, layers: [L, ...c.layers] }));
+        setSelected(L.id);
+      },
+      dup: (id) => {
+        const nid = newId("copy");
+        commit((c) => {
+          const i = c.layers.findIndex((l) => l.id === id);
+          if (i < 0) return c;
+          const src = c.layers[i];
+          const copy = { ...src, id: nid, name: src.name + " копия", s: { ...src.s } };
+          const arr = [...c.layers];
+          arr.splice(i, 0, copy);
+          return { ...c, layers: arr };
+        });
+        setSelected(nid);
+      },
+      remove: (id) => {
+        commit((c) => ({ ...c, layers: c.layers.filter((l) => l.id !== id) }));
+        setSelected((s) => (s === id ? null : s));
+      },
+      replace: (inp) => {
+        if (!inp || typeof inp !== "object" || (!("layers" in (inp as object)) && !("g" in (inp as object)))) return "Неверный формат: ожидался объект с полями g и layers";
+        const n = normalizeConfig(inp);
+        commit(() => n);
+        setSelected((s) => (n.layers.some((l) => l.id === s) ? s : (n.layers[0]?.id ?? null)));
+        return null;
+      },
+      reset: () => commit(() => defaultConfig()),
+      seek: (t) => engine.current?.seek(t),
+      toggle: () => engine.current?.toggle(),
+      restart: () => engine.current?.restart(),
+    }),
+    [cfg, selected, commit]
+  );
 
   useEffect(() => {
+    window.__lab = { getCfg: () => cfgRef.current, replace: api.replace, engine: () => engine.current };
+  }, [api.replace]);
+
+  // ── горячие клавиши и авто-скрытие тулбара ──
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "r" || e.key === "R" || e.key === "к" || e.key === "К") replay();
+      const el = e.target as HTMLElement;
+      if (el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) && (el as HTMLInputElement).type !== "range") return;
+      const k = e.key.toLowerCase();
+      if (e.code === "Space") {
+        e.preventDefault();
+        engine.current?.toggle();
+      } else if (k === "r" || k === "к") engine.current?.restart();
+      else if (k === "h" || k === "р") setUiVisible((v) => !v);
+      else if (k === "s" || k === "ы") setOpenSet((v) => !v);
+      else if (k === "c" || k === "с") setOpenComp((v) => !v);
+      else if (e.key === "ArrowRight") engine.current?.seek((engine.current?.time ?? 0) + 2);
+      else if (e.key === "ArrowLeft") engine.current?.seek(Math.max(0, (engine.current?.time ?? 0) - 2));
     };
+    let timer = 0;
+    const wake = () => {
+      setIdle(false);
+      clearTimeout(timer);
+      timer = window.setTimeout(() => setIdle(true), 3200);
+    };
+    wake();
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [replay]);
+    window.addEventListener("pointermove", wake);
+    window.addEventListener("pointerdown", wake);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("pointermove", wake);
+      window.removeEventListener("pointerdown", wake);
+      clearTimeout(timer);
+    };
+  }, []);
+
+  const replay = useCallback(() => engine.current?.restart(), []);
+  const dim = idle && !openSet && !openComp;
 
   return (
-    <div className="fixed inset-0 overflow-hidden bg-black select-none">
+    <div className="fixed inset-0 overflow-hidden bg-black select-none" style={{ cursor: idle && !openSet && !openComp ? "none" : "default" }}>
       <div ref={host} className="absolute inset-0" />
 
-      {/* кинематографические полосы */}
-      <div ref={topBar} className="pointer-events-none absolute inset-x-0 top-0 bg-black" style={{ height: 0 }} />
-      <div ref={botBar} className="pointer-events-none absolute inset-x-0 bottom-0 bg-black" style={{ height: 0 }} />
+      <Overlays cfg={cfg} onReplay={replay} />
 
-      {/* HUD */}
-      <div
-        ref={hudRef}
-        className="pointer-events-none absolute left-6 bottom-5 flex items-center gap-3 font-mono text-[10px] tracking-[0.3em] text-amber-200/70"
-      >
-        <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-300 shadow-[0_0_8px_2px_rgba(255,190,80,0.8)]" />
-        <span ref={timeRef}>00:00</span>
-      </div>
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-amber-100/10">
-        <div
-          ref={progRef}
-          className="h-px origin-left bg-gradient-to-r from-amber-700 via-amber-300 to-amber-100"
-          style={{ transform: "scaleX(0)" }}
-        />
-      </div>
+      {/* UI */}
+      {uiVisible && (
+        <div className="pointer-events-none fixed inset-0" style={{ zIndex: 1000 }}>
+          <div
+            className={`pointer-events-auto fixed top-4 right-4 flex items-center gap-0.5 rounded-full border border-white/10 bg-black/40 p-1 text-white backdrop-blur-md transition-opacity duration-700 ${
+              dim ? "opacity-0 hover:opacity-100" : "opacity-100"
+            }`}
+          >
+            <ToolBtn onClick={() => engine.current?.toggle()} title="Пауза / воспроизведение (Space)">
+              {playing ? <IconPause /> : <IconPlay />}
+            </ToolBtn>
+            <ToolBtn onClick={replay} title="С начала (R)">
+              <IconRestart />
+            </ToolBtn>
+            <div className="mx-0.5 h-4 w-px bg-white/15" />
+            <ToolBtn active={openComp} onClick={() => setOpenComp((v) => !v)} title="Композиция — слои (C)">
+              <IconLayers />
+            </ToolBtn>
+            <ToolBtn active={openSet} onClick={() => setOpenSet((v) => !v)} title="Настройки (S)">
+              <IconGear />
+            </ToolBtn>
+          </div>
 
-      {/* титры */}
-      <div className="pointer-events-none absolute inset-x-0 bottom-[5vh] flex flex-col items-center gap-3 text-center">
-        <div
-          ref={brandRef}
-          className="bg-gradient-to-b from-amber-50 via-amber-200 to-amber-500 bg-clip-text text-[clamp(28px,4.2vw,64px)] font-extralight uppercase text-transparent"
-          style={{
-            opacity: 0,
-            letterSpacing: "0.9em",
-            paddingLeft: "0.9em",
-            filter: "drop-shadow(0 0 18px rgba(255,170,50,0.45))",
-            fontFamily: '"Helvetica Neue", Helvetica, Arial, sans-serif',
-          }}
-        >
-          {BRAND}
+          {openComp && <CompositionPanel api={api} onClose={() => setOpenComp(false)} onOpenLayer={() => { setOpenSet(true); setTab("layer"); }} />}
+          {openSet && <SettingsPanel api={api} tab={tab} setTab={setTab} onClose={() => setOpenSet(false)} />}
         </div>
-        <div
-          ref={tagRef}
-          className="text-[clamp(9px,0.9vw,13px)] font-light uppercase text-amber-200/80"
-          style={{ opacity: 0, letterSpacing: "0.5em", paddingLeft: "0.5em" }}
-        >
-          {TAGLINE}
-        </div>
-      </div>
-
-      {/* повтор */}
-      <button
-        onClick={replay}
-        className={`absolute right-6 bottom-5 rounded-full border border-amber-300/40 bg-black/30 px-5 py-2 font-mono text-[10px] uppercase tracking-[0.3em] text-amber-200 backdrop-blur transition-all duration-700 hover:border-amber-200 hover:bg-amber-300/10 hover:text-amber-50 ${
-          canReplay ? "opacity-100" : "pointer-events-none opacity-0"
-        }`}
-      >
-        ↻ Повторить
-      </button>
-
-      {error && (
-        <div className="absolute inset-0 flex items-center justify-center p-8 text-center text-amber-200">{error}</div>
       )}
+
+      {error && <div className="absolute inset-0 flex items-center justify-center p-8 text-center text-amber-200">{error}</div>}
     </div>
   );
 }
