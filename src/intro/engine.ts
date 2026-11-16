@@ -821,8 +821,11 @@ export class IntroEngine {
     let [px, py, pz] = cs.p;
     const safe = terrainSafeHeight(px, pz);
     py = Math.max(Math.max(py, safe + 1.8) + g.heightAdd, safe + 0.9);
+    // затухание тряски к концу ролика — в финале должно быть неподвижно
+    const endFade = 1 - smoothstep(g.duration - 4, g.duration, t);
     const shakeAmp =
-      (0.035 + 0.05 * smoothstep(25, T_BOOM, t) + (q > 0 && EX ? 0.9 * Math.exp(-q * 2.6) * EX.camShake : 0)) * g.shake;
+      (0.035 + 0.05 * smoothstep(25, T_BOOM, t) + (q > 0 && EX ? 0.9 * Math.exp(-q * 2.6) * EX.camShake : 0)) *
+      g.shake * endFade;
     const sx = Math.sin(t * 13.1) * 0.6 + Math.sin(t * 31.7 + 1.3) * 0.4;
     const sy = Math.sin(t * 11.3 + 2.0) * 0.6 + Math.sin(t * 27.9) * 0.4;
     const sz = Math.sin(t * 9.7 + 4.0) * 0.6 + Math.sin(t * 23.3 + 0.6) * 0.4;
@@ -1000,7 +1003,7 @@ export class IntroEngine {
       const c = new THREE.Color(EX.flashColor);
       U.uFlashCol.value.set(c.r, c.g, c.b);
     }
-    U.uAberr.value = (0.0007 + 0.004 * dPhase + 0.012 * flash) * g.aberration;
+    U.uAberr.value = (0.0007 + 0.004 * dPhase * endFade + 0.012 * flash) * g.aberration;
     U.uZoom.value = q < 0 ? 0.1 * smoothstep(27.2, T_BOOM - 0.1, t) * ex.zoomBlur : 0.28 * Math.exp(-q * 3.0) * (exOn ? ex.zoomBlur : 0);
     U.uExposure.value = (q > 0 && exOn ? 1 - 0.15 * smoothstep(0.5, 4, q) : 1) * 0.85 * g.exposure;
     const fadeOut = g.fadeOut > 0 ? 1 - smoothstep(g.duration - g.fadeOut, g.duration, t) : 1;
