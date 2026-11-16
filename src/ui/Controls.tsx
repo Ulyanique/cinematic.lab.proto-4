@@ -43,7 +43,12 @@ export function Field({ def, value, onChange }: { def: Exclude<FieldDef, { t: "h
             value={fmtNum(v, def.step)}
             onChange={(e) => {
               const n = parseFloat(e.target.value);
+              if (isFinite(n)) onChange(n);
+            }}
+            onBlur={(e) => {
+              const n = parseFloat(e.target.value);
               if (isFinite(n)) onChange(Math.min(def.max, Math.max(def.min, n)));
+              else e.target.value = fmtNum(v, def.step);
             }}
           />
         </Row>
@@ -56,12 +61,12 @@ export function Field({ def, value, onChange }: { def: Exclude<FieldDef, { t: "h
             type="text"
             spellCheck={false}
             className="w-[76px] rounded border border-white/10 bg-white/5 px-1 py-0.5 font-mono text-[10px] text-amber-100 outline-none focus:border-amber-300/50"
+            value={value}
             onChange={(e) => {
               const t = e.target.value;
               if (/^#[0-9a-fA-F]{6}$/.test(t)) onChange(t.toLowerCase());
             }}
             onBlur={(e) => (e.target.value = value)}
-            key={value}
             defaultValue={value}
           />
           <input type="color" className="clr" value={value} onChange={(e) => onChange(e.target.value)} />

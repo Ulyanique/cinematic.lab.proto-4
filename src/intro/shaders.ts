@@ -36,12 +36,12 @@ export function makeGold(
   opts: { baseGlow?: number; roughness?: number; color?: number; envI?: number } = {}
 ) {
   const mat = new THREE.MeshStandardMaterial({
-    color: opts.color ?? 0xd9962b,
+    color: opts.color ?? 0xd4af37,
     metalness: 1,
-    roughness: opts.roughness ?? 0.3,
-    flatShading: true,
+    roughness: opts.roughness ?? 0.2,
+    flatShading: false,
     envMap: env,
-    envMapIntensity: opts.envI ?? 1.5,
+    envMapIntensity: opts.envI ?? 1.0,
   });
   const u = {
     uReveal: { value: 1 },
@@ -100,8 +100,9 @@ export function makeGold(
         `#include <emissivemap_fragment>
         {
           vec3 w = fwidth(vBary);
-          vec3 core = 1.0 - smoothstep(vec3(0.0), w * 1.2, vBary);
-          vec3 halo = 1.0 - smoothstep(vec3(0.0), w * 3.5, vBary);
+          // более широкий, мягкий край проволоки (менее субпиксельного мигания)
+          vec3 core = 1.0 - smoothstep(vec3(0.0), w * 2.0, vBary);
+          vec3 halo = 1.0 - smoothstep(vec3(0.0), w * 5.0, vBary);
           float c = max(max(core.x * vEdge.x, core.y * vEdge.y), core.z * vEdge.z);
           float hl = max(max(halo.x * vEdge.x, halo.y * vEdge.y), halo.z * vEdge.z);
           float rr = length(vWP.xz);
@@ -110,7 +111,9 @@ export function makeGold(
           float sh = exp(-pow((rr - uShockR) / 6.0, 2.0));
           float szF = 1.0 - smoothstep(0.05, 0.28, max(w.x, max(w.y, w.z)));
           float k = uEdge * (wave + chg * 2.2 + sh * 5.0) * uReveal * szF;
-          totalEmissiveRadiance += vec3(1.0, 0.64, 0.16) * (c * 1.7 + hl * 0.1) * k;
+          // уменьшена HDR-эмиссия проволоки + затухание на расстоянии (LOD)
+          float distFade = 1.0 - smoothstep(40.0, 200.0, rr);
+          totalEmissiveRadiance += vec3(1.0, 0.64, 0.16) * (c * 0.55 + hl * 0.04) * k * distFade;
           float bg = exp(-max(vWP.y, 0.0) * 0.42);
           totalEmissiveRadiance += vec3(1.0, 0.5, 0.1) * bg * uBaseGlow * (0.8 + 0.2 * sin(uTime * 2.0 + vWP.x));
         }`
@@ -123,21 +126,21 @@ export function makeGold(
 // ───────────────────────── материал логотипа ─────────────────────────
 export function makeLogoMaterial(env: THREE.Texture) {
   const mat = new THREE.MeshStandardMaterial({
-    color: 0xffcf63,
+    color: 0xe6c229,
     metalness: 1,
-    roughness: 0.16,
+    roughness: 0.12,
     envMap: env,
-    envMapIntensity: 2.2,
-    flatShading: true,
-    emissive: new THREE.Color(0x5a2a00),
-    emissiveIntensity: 0.6,
+    envMapIntensity: 1.4,
+    flatShading: false,
+    emissive: new THREE.Color(0x3a1a00),
+    emissiveIntensity: 0.3,
   });
   const u = {
     uWipe: { value: 4 },
     uGlow: { value: 0 },
     uMode: { value: 1 },
     uFlash: { value: 1 },
-    uEdgeCol: { value: new THREE.Vector3(1, 0.72, 0.28) },
+    uEdgeCol: { value: new THREE.Vector3(0.92, 0.78, 0.42) },
     uGlintPos: { value: -9 },
     uGlintI: { value: 0 },
   };
@@ -245,25 +248,21 @@ export function makeScreenMaterial(tex: THREE.Texture, idx: number, isVideo: boo
       void main(){
         vec2 uv = vUv;
         float wipeY = uOn * 1.5 - 0.25;
-        float jag = gHash21(vec2(floor(uv.x * 36.0), floor(uTime * 18.0))) * 0.14;
-        float yy = uv.y + jag;
-        float m = 1.0 - smoothstep(wipeY - 0.05, wipeY, yy);
-        float front = exp(-pow((yy - wipeY) / 0.035, 2.0)) * (1.0 - smoothstep(0.92, 1.0, uOn)) * step(0.001, uOn);
+        float m = 1.0 - smoothstep(wipeY - 0.05, wipeY, uv.y);
+        float front = exp(-pow((uv.y - wipeY) / 0.035, 2.0)) * (1.0 - smoothstep(0.92, 1.0, uOn)) * step(0.001, uOn);
         vec2 ca = vec2(0.0035, 0.0) * (1.0 + front * 6.0);
         vec3 tex;
         tex.r = texture2D(uTex, uv + ca).r;
         tex.g = texture2D(uTex, uv).g;
         tex.b = texture2D(uTex, uv - ca).b;
-        float sl = 0.93 + 0.07 * sin(uv.y * 460.0 + uTime * 3.0);
-        sl = mix(sl, 1.0, uVideo * 0.8);
-        float band = 1.0 - abs(fract(uv.y * 0.55 - uTime * 0.11 + uIdx * 0.173) * 2.0 - 1.0);
-        tex *= sl * (0.92 + 0.22 * smoothstep(0.55, 1.0, band) * (1.0 - uVideo * 0.7));
-        tex += (gHash21(uv * vec2(900.0, 1300.0) + uTime) - 0.5) * 0.035;
+        float band = 1.0 - abs(fract(uv.y * 0.55 - uTime * 0.05 + uIdx * 0.173) * 2.0 - 1.0);
+        tex *= (0.92 + 0.22 * smoothstep(0.55, 1.0, band) * (1.0 - uVideo * 0.7));
         vec3 glass = mix(vec3(0.02, 0.011, 0.003), vec3(0.10, 0.055, 0.012), uv.y);
         glass += vec3(1.0, 0.7, 0.3) * 0.06 * (sin(uv.x * 3.0 + uv.y * 2.0 + uTime * 0.3) * 0.5 + 0.5);
         vec3 col = mix(glass, tex * 1.2, m);
         col += vec3(1.0, 0.72, 0.28) * front * 3.4;
-        col *= uFlick;
+        // 부드러운 флик вместо резкого уФлик
+        col *= (0.92 + 0.08 * uFlick);
         gl_FragColor = vec4(col, 1.0);
       }`,
   });
@@ -614,17 +613,18 @@ export function makeFinalShader() {
         col = acc / 10.0;
       }
 
-      // анаморфные стрики
+      // анаморфные стрики — меньше тапов и шаг, меньше субпиксельного скачка
       vec3 st = vec3(0.0);
       float wsum = 0.0;
-      for (int i = -10; i <= 10; i++) {
+      for (int i = -5; i <= 5; i++) {
         float fi = float(i);
-        float w = exp(-abs(fi) * 0.32);
-        vec3 s = texture2D(tDiffuse, uv + vec2(fi * 0.011, 0.0)).rgb;
-        st += max(s - 1.3, 0.0) * w;
+        float w = exp(-abs(fi) * 0.45);
+        vec3 s = texture2D(tDiffuse, uv + vec2(fi * 0.008, 0.0)).rgb;
+        float bright = max(dot(s, vec3(0.333)), 0.0);
+        st += smoothstep(1.3, 1.9, bright) * s * w;
         wsum += w;
       }
-      col += st / wsum * uStreak * vec3(1.0, 0.72, 0.42) * 6.0;
+      col += st / wsum * uStreak * vec3(1.0, 0.72, 0.42) * 3.5;
 
       col *= uExposure;
       col = mix(col, uFlashCol * 7.0, uFlash);
@@ -651,7 +651,8 @@ export function makeFinalShader() {
       col *= 1.0 - uVig * vig;
 
       col = pow(col, vec3(1.0 / 2.2));
-      col += (fHash(uv * uRes + fract(uTime) * 91.7) - 0.5) * 0.028 * uGrain;
+      // статичное зерно без привязки к времени (не мигает при движении)
+      col += (fHash(uv * uRes) - 0.5) * 0.02 * uGrain;
       col *= uFade;
       gl_FragColor = vec4(col, 1.0);
     }`,

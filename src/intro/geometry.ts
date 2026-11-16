@@ -18,10 +18,17 @@ export function terrainHeight(x: number, z: number) {
 }
 
 /** Максимальная высота рельефа вокруг точки — чтобы камера не проваливалась в грань */
+let frameId = 0;
+const safeCache = new Map<string, number>();
+export function terrainSafeHeightBeginFrame() { frameId++; safeCache.clear(); }
 export function terrainSafeHeight(x: number, z: number, rad = 4) {
+  const key = `${Math.round(x / rad) * rad},${Math.round(z / rad) * rad}`;
+  const cached = safeCache.get(key);
+  if (cached !== undefined) return cached;
   let m = terrainHeight(x, z);
   m = Math.max(m, terrainHeight(x + rad, z), terrainHeight(x - rad, z));
   m = Math.max(m, terrainHeight(x, z + rad), terrainHeight(x, z - rad));
+  safeCache.set(key, m);
   return m;
 }
 

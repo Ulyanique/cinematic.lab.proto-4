@@ -11,7 +11,7 @@ import { FieldList } from "./Controls";
 import { useTime } from "./store";
 
 export interface Api {
-  cfg: Config;
+  getCfg: () => Config;
   setG: (k: string, v: any) => void;
   setS: (id: string, k: string, v: any) => void;
   patchLayer: (id: string, p: Partial<Pick<Layer, "name" | "on">>) => void;
@@ -128,6 +128,19 @@ export function FloatPanel({
     });
   };
   const onUp = () => (drag.current = null);
+  const onCancel = () => (drag.current = null);
+
+  // переклеmpiт позицию при ресайзе окна, чтобы панель не застряла за экраном
+  useEffect(() => {
+    const onResize = () => {
+      setPos((p) => ({
+        x: Math.min(window.innerWidth - 60, Math.max(-width + 80, right ? Math.max(8, window.innerWidth - width - p.x) : p.x)),
+        y: Math.min(window.innerHeight - 40, Math.max(0, p.y)),
+      }));
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [width, right]);
 
   return (
     <div
@@ -140,6 +153,7 @@ export function FloatPanel({
         onPointerDown={onDown}
         onPointerMove={onMove}
         onPointerUp={onUp}
+        onPointerCancel={onCancel}
       >
         <div className="text-[10px] font-semibold tracking-[0.25em] text-amber-200 uppercase">{title}</div>
         <div className="flex items-center gap-1 text-white/50">
@@ -161,7 +175,7 @@ function Scrubber({ api }: { api: Api }) {
   const input = useRef<HTMLInputElement>(null);
   const lab = useRef<HTMLSpanElement>(null);
   const [playing, setPlaying] = useState(false);
-  const dur = api.cfg.g.duration;
+  const dur = api.getCfg().g.duration;
   useTime(
     (t, p) => {
       if (input.current && document.activeElement !== input.current) input.current.value = String(Math.min(t, dur));
@@ -211,7 +225,7 @@ const btn =
   "rounded-md border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] text-white/80 transition-colors hover:border-amber-300/40 hover:bg-amber-300/10 hover:text-amber-100";
 
 function JsonTab({ api }: { api: Api }) {
-  const text = useMemo(() => JSON.stringify(api.cfg, null, 2), [api.cfg]);
+  const text = useMemo(() => JSON.stringify(api.getCfg(), null, 2), [api.getCfg()]);
   const [draft, setDraft] = useState(text);
   const [dirty, setDirty] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; t: string } | null>(null);
@@ -249,7 +263,7 @@ function JsonTab({ api }: { api: Api }) {
         >
           Копировать
         </button>
-        <button className={btn} onClick={async () => setMsg({ ok: await copyText(JSON.stringify(api.cfg)), t: "Скопирован компактный JSON" })}>
+        <button className={btn} onClick={async () => setMsg({ ok: await copyText(JSON.stringify(api.getCfg())), t: "Скопирован компактный JSON" })}>
           Компактно
         </button>
         <button
@@ -323,7 +337,7 @@ function JsonTab({ api }: { api: Api }) {
 export type Tab = "general" | "layer" | "json";
 
 export function SettingsPanel({ api, tab, setTab, onClose }: { api: Api; tab: Tab; setTab: (t: Tab) => void; onClose: () => void }) {
-  const layer = api.cfg.layers.find((l) => l.id === api.selected) ?? null;
+  const layer = api.getCfg().layers.find((l) => l.id === api.selected) ?? null;
   const def = layer ? LAYER_TYPES[layer.type] : null;
   const tabs: [Tab, string][] = [
     ["general", "Общие"],
@@ -347,7 +361,7 @@ export function SettingsPanel({ api, tab, setTab, onClose }: { api: Api; tab: Ta
       {tab === "general" && (
         <>
           <Scrubber api={api} />
-          <FieldList scope="g" fields={GLOBAL_FIELDS} values={api.cfg.g} onChange={api.setG} />
+          <FieldList scope="g" fields={GLOBAL_FIELDS} values={api.getCfg().g} onChange={api.setG} />
         </>
       )}
 
@@ -383,7 +397,7 @@ export function CompositionPanel({ api, onClose, onOpenLayer }: { api: Api; onCl
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [overIdx, setOverIdx] = useState<number | null>(null);
   const [menu, setMenu] = useState(false);
-  const layers = api.cfg.layers;
+  const layers = api.getCfg().layers;
   const present = new Set(layers.map((l) => l.type));
 
   return (
