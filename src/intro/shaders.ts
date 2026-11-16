@@ -39,7 +39,7 @@ export function makeGold(
     color: opts.color ?? 0xd9962b,
     metalness: 1,
     roughness: opts.roughness ?? 0.3,
-    flatShading: true,
+    flatShading: false,
     envMap: env,
     envMapIntensity: opts.envI ?? 1.5,
   });
@@ -131,7 +131,7 @@ export function makeLogoMaterial(env: THREE.Texture) {
     roughness: 0.16,
     envMap: env,
     envMapIntensity: 2.2,
-    flatShading: true,
+    flatShading: false,
     emissive: new THREE.Color(0x5a2a00),
     emissiveIntensity: 0.6,
   });

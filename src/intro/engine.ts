@@ -19,6 +19,7 @@ import {
   buildTerrain,
   buildWorldStructures,
   terrainSafeHeight,
+  terrainSafeHeightBeginFrame,
 } from "./geometry";
 import {
   makeFinalShader,
@@ -797,6 +798,7 @@ export class IntroEngine {
   }
 
   private update(t: number) {
+    terrainSafeHeightBeginFrame();
     const cfg = this.getCfg();
     if (cfg !== this.lastCfg) this.index(cfg);
     const g = cfg.g;
